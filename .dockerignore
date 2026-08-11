@@ -1,0 +1,27 @@
+# Secrets — never bake these into an image
+.env
+*.env
+.env.*
+!.env.example
+config/providers.json
+config/freebuff-tokens.json
+config/tool-permissions.json
+
+# Local tooling / caches
+.git
+.gitignore
+.venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+htmlcov
+
+# Not needed at runtime
+tests
+exploitation.js
+
+# Runtime data — never bake local chat history into an image
+data

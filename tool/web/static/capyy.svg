@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Capyy</title><desc id="desc">A friendly capybara connecting AI agents, tools, and providers.</desc>
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0b6f78"/><stop offset="1" stop-color="#164e63"/></linearGradient></defs>
+  <rect width="512" height="512" rx="116" fill="url(#bg)"/>
+  <path d="M96 273c0-101 70-169 167-169 86 0 153 51 153 143 0 96-67 159-164 159H153c-32 0-57-25-57-57v-76Z" fill="#b98257"/>
+  <path d="M143 157c-34-23-67-3-62 33 5 33 34 48 62 32m191-65c34-23 67-3 62 33-5 33-34 48-62 32" fill="#9c6745"/>
+  <path d="M155 307c29 27 74 40 110 40 46 0 91-16 119-44" fill="none" stroke="#865438" stroke-width="16" stroke-linecap="round"/>
+  <ellipse cx="201" cy="239" rx="16" ry="20" fill="#17212b"/><ellipse cx="322" cy="239" rx="16" ry="20" fill="#17212b"/><circle cx="207" cy="233" r="5" fill="#fff"/><circle cx="328" cy="233" r="5" fill="#fff"/>
+  <ellipse cx="261" cy="282" rx="34" ry="23" fill="#70412e"/><path d="M248 283h26" stroke="#f5d7bd" stroke-width="8" stroke-linecap="round"/>
+  <path d="M47 165h65m288 0h65M47 349h77m264 0h77" stroke="#73e0d1" stroke-width="12" stroke-linecap="round"/><circle cx="43" cy="165" r="18" fill="#73e0d1"/><circle cx="469" cy="165" r="18" fill="#73e0d1"/><circle cx="43" cy="349" r="18" fill="#73e0d1"/><circle cx="469" cy="349" r="18" fill="#73e0d1"/>
+</svg>

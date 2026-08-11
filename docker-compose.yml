@@ -1,0 +1,42 @@
+name: ai-gateway-provider
+
+# ==========================================================================
+# ai-gateway-provider — run with `docker compose up -d --build`
+#
+# Volumes are declared here, so no manual `-v` mounting is needed:
+#   - gateway-config -> /app/config   (freebuff-tokens.json, providers.json)
+#   - gateway-data   -> /app/data     (chat history: data/chat_history)
+#
+# `gateway-data` is an EXTERNAL volume (it already existed) so rebuilds/upgrades
+# never lose chat history. Data survives container recreation.
+# To reset everything: docker compose down -v
+# ==========================================================================
+
+services:
+  ai-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ai-gateway-provider:latest
+    container_name: ai-gateway-provider
+    # Reads .env if present (FREEBUFF_TOKEN, FREEBUFF_PORT, ...); optional.
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "1221:1221" # API (OpenAI/Anthropic-compatible)
+      - "2222:2222" # Dashboard web
+    volumes:
+      - gateway-config:/app/config
+      - gateway-data:/app/data
+      # Local AI tool chat history (read-only) so the Dashboard can auto-scan:
+      # Claude Code (~/.claude) and Codex CLI (~/.codex)
+      - ${HOME}/.claude:/home/appuser/.claude:ro
+      - ${HOME}/.codex:/home/appuser/.codex:ro
+    restart: unless-stopped
+
+volumes:
+  gateway-config:
+  # The old volume already holds chat history — reuse it instead of creating a new one.
+  gateway-data:
+    external: true

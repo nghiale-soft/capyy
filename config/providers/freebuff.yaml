@@ -1,0 +1,12 @@
+# Cấu hình provider Freebuff
+# id: provider_id dùng để route (model prefix "freebuff/...")
+id: freebuff
+name: Freebuff
+type: codebuff     # adapter type: codebuff (riêng) / openai-compatible (generic)
+base_url: https://www.codebuff.com
+zeroclick_base_url: https://zeroclick.dev
+ad_providers:
+  - gravity
+  - zeroclick
+enabled: true
+# token lấy từ env FREEBUFF_TOKEN (hoặc ghi đè ở đây nếu cần)

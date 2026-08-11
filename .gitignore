@@ -1,0 +1,25 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Local configuration
+.env
+docs/ai-read-first/
+
+# Runtime-written config containing secrets (provider api keys / freebuff tokens)
+config/providers.json
+config/freebuff-tokens.json
+config/tool-permissions.json
+config/figma-token.json
+config/figma-tokens.json
+
+# Runtime data (chat history per project)
+data/
+!data/.gitkeep

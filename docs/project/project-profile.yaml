@@ -1,0 +1,60 @@
+project:
+  name: AI Gateway
+  type: gateway / proxy / api-adapter
+  languages:
+    - python
+  frameworks:
+    - fastapi
+    - httpx
+    - uvicorn
+    - python-dotenv
+
+documentation:
+  primary_language: en
+  primary_language_evidence: README.md root is written in English; source code comments and docs use English
+  fallback_language: vi
+  preserve_identifiers: true
+  glossary: requirements/glossary.md
+
+roles:
+  pm: TBD — user confirmation required
+  po: TBD — user confirmation required
+  ba: TBD — user confirmation required
+  sa: TBD — user confirmation required
+  tech_lead: TBD — user confirmation required
+  design: TBD — user confirmation required
+  tester: TBD — user confirmation required
+  qa: TBD — user confirmation required
+  dev: AI-assisted
+
+build:
+  commands:
+    - "uv sync"
+    - "uv run ai-gateway"
+    - "docker compose up -d --build"
+
+verification:
+  formatter: "ruff format"  # dự kiến; chưa xác nhận cấu hình pyproject
+  lint: "ruff check"        # dự kiến; chưa xác nhận cấu hình pyproject
+  compile_or_typecheck: "python -m compileall <affected-path>"
+  unit_test: "pytest"       # dự án gốc freebuff2api có tests/
+  integration_test: TBD — user confirmation required
+  business_verification:
+    required: true
+    type: TBD — user confirmation required
+    command: TBD — user confirmation required
+
+optional_capabilities:
+  cve_scanning:
+    enabled: false
+    tool: null
+  sonar:
+    enabled: false
+    tool: null
+
+risk:
+  public_api: TBD — user confirmation required
+  database: TBD — user confirmation required
+  messaging: TBD — user confirmation required
+  file_processing: TBD — user confirmation required
+  sensitive_data: true  # API key / token của provider là dữ liệu nhạy cảm

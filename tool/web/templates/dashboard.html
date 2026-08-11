@@ -1,0 +1,1635 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Capyy — Dashboard</title>
+    <link rel="icon" type="image/svg+xml" href="/static/capyy.svg">
+    <link rel="icon" type="image/png" href="/static/favicon.png">
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+    <header class="dash-header">
+        <div class="dash-brand">
+            <img class="brand-icon" src="/static/capyy.svg" alt="Capyy">
+            <span>Capyy</span>
+        </div>
+        <div class="dash-header-right">
+            <span class="live-badge"><span class="live-dot"></span> Gateway online</span>
+        </div>
+    </header>
+
+    <div class="app-shell">
+        <!-- ===== Sidebar (chỉ menu chính, không list provider) ===== -->
+        <aside class="sidebar">
+            <div class="sidebar-label">Menu</div>
+            <button class="menu-item nav-item" id="providersNav">
+                <span class="menu-main">
+                    <span class="menu-name"><span class="ms-icon">dns</span>Providers</span>
+                    <span class="menu-sub" id="providersNavSub">sources · priority · tokens</span>
+                </span>
+            </button>
+
+            <button class="menu-item nav-item" id="historyNav">
+                <span class="menu-main">
+                    <span class="menu-name"><span class="ms-icon">chat_bubble</span>Chat history</span>
+                    <span class="menu-sub">projects · thinking · tools</span>
+                </span>
+            </button>
+
+            <hr class="sidebar-divider">
+
+            <div class="sidebar-label">Settings</div>
+            <button class="menu-item nav-item" id="settingsNav">
+                <span class="menu-main">
+                    <span class="menu-name"><span class="ms-icon">settings</span>Settings <span id="settingsContributionBadge" class="pending-badge hidden" aria-label="Pending tool mapping contributions">0</span></span>
+                    <span class="menu-sub">gateway status</span>
+                </span>
+            </button>
+            <button class="menu-item nav-item" id="aboutNav">
+                <span class="menu-main">
+                    <span class="menu-name"><span class="ms-icon">info</span>About</span>
+                    <span class="menu-sub">version · help · docs</span>
+                </span>
+            </button>
+
+            <div class="sidebar-footer" id="sidebarStatus">Loading…</div>
+        </aside>
+
+        <!-- ===== Main panel ===== -->
+        <main class="main-panel">
+            <!-- Providers list view -->
+            <section id="detailSection">
+                <div class="page-head">
+                    <div>
+                        <h2 class="page-title" id="viewTitle">Providers</h2>
+                        <p class="page-subtitle" id="viewSubtitle">Configure AI providers — the gateway routes and fails over in priority order</p>
+                    </div>
+                    <div class="page-head-actions">
+                        <button class="btn btn-secondary" id="priorityBtn"><span class="ms-icon">swap_vert</span>Priority</button>
+                        <button class="btn btn-primary" id="addBtn"><span class="ms-icon">add</span>Add provider</button>
+                    </div>
+                </div>
+                <div id="detailContent"></div>
+            </section>
+
+            <!-- Form view (add / edit) -->
+            <section id="formSection" class="form-section hidden">
+                <div class="main-card">
+                    <h2 id="formTitle" style="margin-bottom:14px;">Add provider</h2>
+
+                    <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;">
+                        <div class="form-group">
+                            <label>Name (becomes the ID)</label>
+                            <input id="f_name" placeholder="e.g. My FreeBuff" autocomplete="off">
+                        </div>
+                        <div class="form-group">
+                            <label>Source</label>
+                            <select id="f_source">
+                                <option value="url">URL endpoint</option>
+                                <option value="command">Local command</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Type</label>
+                            <select id="f_type">
+                                <option value="openai-compatible">OpenAI-compatible</option>
+                                <option value="anthropic">Anthropic (Claude)</option>
+                                <option value="google">Google (Gemini)</option>
+                                <option value="openrouter">OpenRouter</option>
+                                <option value="ollama">Ollama (local)</option>
+                                <option value="lmstudio">LM Studio (local)</option>
+                                <option value="custom">Custom</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Command</label>
+                            <select id="f_command">
+                                <option value="freebuff">FreeBuff</option>
+                                <option value="claude">Claude Code</option>
+                                <option value="codex">Codex CLI</option>
+                                <option value="commandcode">CommandCode</option>
+                            </select>
+                        </div>
+                        <div class="form-group full">
+                            <label>Base URL</label>
+                            <input id="f_base_url" placeholder="https://api.openai.com/v1" autocomplete="off">
+                        </div>
+                        <div class="form-group full">
+                            <label>API Key</label>
+                            <div class="pw-row">
+                                <input id="f_api_key" type="password" placeholder="Bearer token (empty for local)" autocomplete="off">
+                                <button type="button" class="pw-toggle ms-icon" data-target="f_api_key" title="Show / hide">visibility</button>
+                            </div>
+                        </div>
+                        <div class="form-group full">
+                            <label>Model</label>
+                            <div class="model-fetch-row">
+                                <input id="f_model" list="modelOptions" placeholder="e.g. deepseek/deepseek-v4-flash" autocomplete="off">
+                                <datalist id="modelOptions"></datalist>
+                                <button type="button" class="btn btn-secondary" id="fetchModelsBtn" title="Fetch model list from the base URL"><span class="ms-icon">download</span>Fetch</button>
+                            </div>
+                            <p id="modelsHint" class="form-hint">One model per provider. Want another model? Create a new provider.</p>
+                        </div>
+                    </div>
+
+                    <div class="form-grid" style="margin-top:12px;">
+                        <div class="form-group">
+                            <label class="form-checkbox"><input type="checkbox" id="f_enabled" checked> Enabled</label>
+                        </div>
+                        <div class="form-group">
+                        </div>
+                    </div>
+
+                    <!-- Token pool (freebuff only) -->
+                    <div id="freebuffTokenBox" class="hidden" style="margin-top:16px;">
+                        <div class="section-title"><span class="ms-icon">key</span> FreeBuff token pool</div>
+                        <p class="history-sub" style="margin-bottom:10px;">
+                            Stored in <code>config/freebuff-tokens.json</code> (gitignored). Pool reloads immediately.
+                        </p>
+                        <div class="token-add-row">
+                            <div class="pw-row token-pw">
+                                <input id="f_token_new" type="password" placeholder="Paste a new token…" autocomplete="off" spellcheck="false">
+                                <button type="button" class="pw-toggle ms-icon" data-target="f_token_new" title="Show / hide">visibility</button>
+                            </div>
+                            <button type="button" class="btn btn-secondary btn-sm" id="addTokenBtn"><span class="ms-icon">add</span>Add token</button>
+                        </div>
+                        <p id="tokensMsg" class="form-error"></p>
+                        <div id="tokensList" class="tokens-list"></div>
+                    </div>
+
+                    <div class="form-actions">
+                        <button class="action-btn primary-btn" id="saveBtn">Save</button>
+                        <button class="action-btn secondary-btn" id="cancelBtn">Cancel</button>
+                    </div>
+                    <p id="formMsg" class="form-error"></p>
+                </div>
+            </section>
+
+            <!-- Priority view -->
+            <section id="prioritySection" class="hidden">
+                <div class="main-card">
+                    <h2 style="margin-bottom:4px;"><span class="ms-icon">swap_vert</span> Provider priority</h2>
+                    <p class="history-sub" style="margin-bottom:14px;">
+                        Failover order: if the top provider fails, the gateway automatically falls through to the next one.
+                    </p>
+                    <div id="priorityList" class="priority-list"><div class="history-loading">Loading…</div></div>
+                    <div class="detail-actions" style="margin-top:14px;">
+                        <button class="btn btn-primary" id="prioritySaveBtn"><span class="ms-icon">save</span>Save order</button>
+                        <button class="btn btn-secondary" onclick="go('providers')">Back</button>
+                    </div>
+                    <p id="priorityMsg" class="form-error" style="margin-top:8px;"></p>
+                </div>
+            </section>
+
+            <!-- History view -->
+            <section id="historySection" class="hidden">
+                <div class="main-card">
+                    <div class="history-head">
+                        <div>
+                            <h2 style="margin-bottom:4px;"><span class="ms-icon">chat_bubble</span> Chat history</h2>
+                            <p class="history-sub">Conversations per project — click to open like a chat app.</p>
+                        </div>
+                        <div class="history-actions">
+                            <button class="btn btn-secondary" id="historyRefreshBtn"><span class="ms-icon">refresh</span>Refresh</button>
+                            <button class="btn btn-primary" id="scanBtn"><span class="ms-icon">search</span>Scan other AI</button>
+                        </div>
+                    </div>
+                    <div id="scanResult" class="history-scan-result hidden"></div>
+                    <div class="history-filters" id="historyFiltersRow">
+                        <div class="filter-dd" id="filterProjectDD"></div>
+                        <div class="filter-dd" id="filterSourceDD"></div>
+                        <div class="filter-dd" id="filterTimeDD"></div>
+                    </div>
+                    <div class="history-projects" id="historyProjects"><div class="history-loading">Loading…</div></div>
+                </div>
+            </section>
+
+            <!-- Settings view -->
+            <section id="settingsSection" class="hidden">
+                <div class="main-card">
+                    <h2 style="margin-bottom:8px;"><span class="ms-icon">settings</span> Settings</h2>
+                    <p class="history-sub" style="margin-bottom:18px;">Gateway system information.</p>
+                    <div class="about-grid">
+                        <div class="about-item">
+                            <span class="f-label">API port</span>
+                            <span class="f-value mono">1221</span>
+                        </div>
+                        <div class="about-item">
+                            <span class="f-label">Dashboard</span>
+                            <span class="f-value mono">2222</span>
+                        </div>
+                        <div class="about-item">
+                            <span class="f-label">Providers</span>
+                            <span class="f-value" id="settingsProviders">—</span>
+                        </div>
+                        <div class="about-item">
+                            <span class="f-label">History mode</span>
+                            <span class="f-value mono" id="settingsHistoryMode">—</span>
+                        </div>
+                        <div class="about-item">
+                            <span class="f-label">History dir</span>
+                            <span class="f-value mono" id="settingsHistoryDir">—</span>
+                        </div>
+                        <div class="about-item">
+                            <span class="f-label">Token source</span>
+                            <span class="f-value mono" id="settingsTokenSource">—</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="main-card" style="margin-top:16px;">
+                    <h3 style="margin-bottom:6px;">Tool mapping contributions <span id="contributionTitleBadge" class="pending-badge hidden">0 pending</span></h3>
+                    <p class="history-sub">A repair found a tool-name or argument-name mismatch. Review the metadata below. Approving only opens a prefilled GitHub Issue; nothing leaves this machine until you submit it on GitHub.</p>
+                    <div id="toolMappingContributions" class="history-empty">Loading…</div>
+                </div>
+
+            </section>
+
+            <!-- About view -->
+            <section id="aboutSection" class="hidden">
+                <div class="main-card">
+                    <h2 style="margin-bottom:8px;"><img class="inline-brand-icon" src="/static/capyy.svg" alt=""> About Capyy</h2>
+                    <p class="history-sub" style="margin-bottom:18px;">A calm bridge between AI agents, local tools, MCP servers, and AI providers.</p>
+                    <div class="about-grid">
+                        <div class="about-item">
+                            <span class="f-label">Version</span>
+                            <span class="f-value mono" id="aboutVersion">0.1.0</span>
+                        </div>
+                        <div class="about-item">
+                            <span class="f-label">Author</span>
+                            <span class="f-value">Nghia Le</span>
+                        </div>
+                        <div class="about-item">
+                            <span class="f-label">Donate</span>
+                            <span class="f-value">VISA</span>
+                        </div>
+                    </div>
+                    <div class="detail-actions" style="margin-top:18px;">
+                        <a class="btn btn-secondary" href="https://freebuff.com" target="_blank" rel="noopener"><span class="ms-icon">language</span>freebuff.com</a>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- History detail modal -->
+    <div id="historyModal" class="modal-overlay hidden">
+        <div class="modal chat-modal">
+            <div class="modal-head">
+                <div>
+                    <div class="modal-title" id="modalTitle"></div>
+                    <div class="modal-sub" id="modalSub"></div>
+                </div>
+                <div class="modal-actions">
+                    <button class="btn btn-danger" id="modalDeleteBtn"><span class="ms-icon">delete_outline</span>Delete</button>
+                    <button class="btn btn-secondary" id="modalCloseBtn"><span class="ms-icon">close</span>Close</button>
+                </div>
+            </div>
+            <div class="modal-body" id="modalBody"></div>
+            <div class="modal-foot">
+                <button class="btn btn-secondary" id="scrollBottomBtn"><span class="ms-icon">arrow_downward</span>Scroll to bottom</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const $ = id => document.getElementById(id);
+
+        // Escape for both HTML text and attributes (used with innerHTML)
+        const esc = value => String(value ?? '').replace(/[&<>"']/g, m => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+        }[m]));
+
+        // Per-type base URL placeholders so the user knows what to type.
+        const TYPE_PLACEHOLDERS = {
+            'openai-compatible': 'https://api.openai.com/v1',
+            'anthropic': 'https://api.anthropic.com/v1',
+            'google': 'https://generativelanguage.googleapis.com/v1beta/openai',
+            'openrouter': 'https://openrouter.ai/api/v1',
+            'ollama': 'http://localhost:11434/v1',
+            'lmstudio': 'http://localhost:1234/v1',
+            'custom': 'https://your-api.example.com/v1',
+        };
+
+        let providers = [];
+        let selectedId = null;
+        let editingId = null;
+
+        /* ---------- Views ---------- */
+        function showView(name) {
+            $('detailSection').classList.toggle('hidden', name !== 'detail');
+            $('formSection').classList.toggle('hidden', name !== 'form');
+            $('prioritySection').classList.toggle('hidden', name !== 'priority');
+            $('historySection').classList.toggle('hidden', name !== 'history');
+            $('settingsSection').classList.toggle('hidden', name !== 'settings');
+            $('aboutSection').classList.toggle('hidden', name !== 'about');
+            $('providersNav').classList.toggle('active', ['detail', 'form', 'priority'].includes(name));
+            $('historyNav').classList.toggle('active', name === 'history');
+            $('settingsNav').classList.toggle('active', name === 'settings');
+            $('aboutNav').classList.toggle('active', name === 'about');
+        }
+
+        /* ---------- Providers ---------- */
+        async function loadProviders(preferId) {
+            try {
+                const resp = await fetch('/api/providers');
+                const data = await resp.json();
+                providers = data.providers || [];
+                if (preferId) selectedId = preferId;
+                renderProviders();
+                $('sidebarStatus').textContent = providers.length
+                    ? `${providers.length} provider · api 1221`
+                    : 'no providers yet';
+                $('providersNavSub').textContent = providers.length
+                    ? `${providers.length} configured`
+                    : 'add a provider';
+            } catch (e) {
+                $('detailContent').innerHTML = '<div class="history-loading">API connection error</div>';
+                $('sidebarStatus').textContent = 'API connection error';
+            }
+        }
+
+        function providerCard(p, rank) {
+            const badges = [];
+            if (p.enabled) badges.push('<span class="status-label tone-success">Enabled</span>');
+            else badges.push('<span class="status-label tone-muted">Disabled</span>');
+
+            const isCmd = p.source === 'command';
+            const isFreebuff = isCmd && p.command === 'freebuff';
+            const sourceText = isCmd
+                ? `<span class="ms-icon sm">terminal</span> command · ${esc(p.command || '-')}`
+                : `<span class="ms-icon sm">language</span> url · ${esc(p.type || '-')}`;
+
+            const models = (p.models || []).length
+                ? `<div class="detail-field full"><span class="f-label">Model</span>
+                     <div class="models-list">${p.models.map(m => `<span class="model-chip">${esc(m)}</span>`).join('')}</div></div>`
+                : '';
+
+            // Token pool shown inline (masked chips + eye to reveal) for the freebuff provider.
+            const tokenField = isFreebuff
+                ? `<div class="detail-field full"><span class="f-label">Tokens</span>
+                     <div class="tokens-inline" data-token-list="${esc(p.id)}"><span class="f-value mono">…</span></div></div>`
+                : '';
+
+            return `
+                <div class="detail-card">
+                    <div class="detail-head">
+                        <div>
+                            <div class="detail-title">${esc(p.name || p.id)}</div>
+                            <div class="detail-id">${esc(p.id)} · priority ${rank}</div>
+                        </div>
+                        <div class="detail-badges">${badges.join('')}</div>
+                    </div>
+                    <div class="detail-grid">
+                        <div class="detail-field"><span class="f-label">Source</span>
+                            <span class="f-value mono">${sourceText}</span></div>
+                        ${tokenField}
+                        <div class="detail-field"><span class="f-label">Enabled</span>
+                            <span class="f-value">${p.enabled ? 'Yes' : 'No'}</span></div>
+                        ${models}
+                    </div>
+                    <div class="detail-actions">
+                        <button class="btn btn-secondary" data-id="${esc(p.id)}" onclick="editFromList(this)"><span class="ms-icon">edit</span>Edit</button>
+                        <button class="btn btn-primary" data-id="${esc(p.id)}" onclick="testFromList(this)"><span class="ms-icon">science</span>Test</button>
+                        <button class="btn btn-danger" data-id="${esc(p.id)}" onclick="deleteFromList(this)"><span class="ms-icon">delete_outline</span>Delete</button>
+                    </div>
+                </div>`;
+        }
+
+        function renderProviders() {
+            const content = $('detailContent');
+            if (!providers.length) {
+                content.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon ms-icon">dns</div>
+                        <div class="empty-title">No providers yet</div>
+                        <div class="empty-hint">Add your first provider to start routing models through the gateway.</div>
+                        <button class="btn btn-primary" onclick="showForm(null)"><span class="ms-icon">add</span>Add provider</button>
+                    </div>`;
+                return;
+            }
+            const ordered = [...providers].sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0));
+            content.innerHTML = ordered.map((p, i) => providerCard(p, i + 1)).join('');
+            if (providers.some(p => p.source === 'command' && p.command === 'freebuff')) {
+                loadProviderTokens();
+            }
+        }
+
+        // Cache of full token values, fetched lazily on first eye-click.
+        let tokenSecrets = null;
+
+        async function getTokenSecrets() {
+            if (tokenSecrets === null) {
+                const resp = await fetch('/api/freebuff/tokens?reveal=1');
+                const data = await resp.json();
+                tokenSecrets = data.tokens || [];
+            }
+            return tokenSecrets;
+        }
+
+        function tokenRowHTML(t, withRemove = false) {
+            const removeBtn = withRemove
+                ? `<button class="btn btn-danger token-remove" data-index="${t.index}" title="Remove"><span class="ms-icon">delete_outline</span></button>`
+                : '';
+            return `
+                <div class="token-item" data-index="${t.index}">
+                    <span class="token-chip" data-masked="${esc(t.masked)}">${esc(t.masked)}</span>
+                    <span class="token-actions">
+                        <button type="button" class="pw-toggle pw-toggle-sm token-eye ms-icon" title="Show / hide token">visibility</button>
+                        ${removeBtn}
+                    </span>
+                </div>`;
+        }
+
+        async function loadProviderTokens() {
+            try {
+                const resp = await fetch('/api/freebuff/tokens');
+                const data = await resp.json();
+                const tokens = data.tokens || [];
+                document.querySelectorAll('[data-token-list]').forEach(el => {
+                    el.innerHTML = tokens.length
+                        ? tokens.map(t => tokenRowHTML(t)).join('')
+                        : '<span class="f-value mono">none yet</span>';
+                });
+            } catch (e) { /* keep "…" */ }
+        }
+
+        // Eye toggle (event delegation): reveal / hide the real token value.
+        // Works for both the FreeBuff pool (data-token-list context) and the
+        // Figma pool (inside #figmaTokensList).
+        document.addEventListener('click', async e => {
+            const eye = e.target.closest('.token-eye');
+            if (!eye) return;
+            const row = eye.closest('.token-item');
+            const chip = row.querySelector('.token-chip');
+            const index = Number(row.dataset.index);
+            if (eye.dataset.open === '1') {
+                chip.textContent = chip.dataset.masked;
+                chip.classList.remove('revealed');
+                eye.dataset.open = '0';
+                eye.textContent = 'visibility';
+                return;
+            }
+            const inFigma = !!document.getElementById('figmaTokensList').contains(row);
+            const secrets = inFigma ? (figmaTokenSecrets || []) : await getTokenSecrets();
+            const t = secrets.find(s => s.index === index);
+            if (t && t.value) {
+                chip.textContent = t.value;
+                chip.classList.add('revealed');
+                eye.dataset.open = '1';
+                eye.textContent = 'visibility_off';
+            }
+        });
+
+        /* ---------- Form ---------- */
+        function slugify(value) {
+            return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+        }
+
+        function syncSourceFields() {
+            const src = $('f_source').value;
+            const isCmd = src === 'command';
+            const cmd = $('f_command').value;
+            const isFreebuff = isCmd && cmd === 'freebuff';
+            $('f_type').closest('.form-group').style.display = isCmd ? 'none' : '';
+            $('f_command').closest('.form-group').style.display = isCmd ? '' : 'none';
+            $('f_base_url').closest('.form-group').style.display = isCmd ? 'none' : '';
+            $('f_api_key').closest('.form-group').style.display = isCmd ? 'none' : '';
+            // Model: URL providers always get a picker; FreeBuff gets the catalog;
+            // other CLI commands (claude/codex) choose their own model internally.
+            const showModel = !isCmd || isFreebuff;
+            $('f_model').closest('.form-group').style.display = showModel ? '' : 'none';
+            $('fetchModelsBtn').style.display = isCmd ? 'none' : '';
+            $('freebuffTokenBox').classList.toggle('hidden', !isFreebuff);
+            if (isFreebuff) {
+                loadTokensStatus();
+                populateFreebuffModels();
+            }
+            updateUrlPlaceholder();
+        }
+
+        async function populateFreebuffModels() {
+            try {
+                const resp = await fetch('/api/freebuff/models');
+                const data = await resp.json();
+                $('modelOptions').innerHTML = (data.models || [])
+                    .map(m => `<option value="${esc(m)}"></option>`).join('');
+                $('modelsHint').textContent = 'Pick one FreeBuff model.';
+            } catch (e) { /* keep manual entry */ }
+        }
+
+        function updateUrlPlaceholder() {
+            const type = $('f_type').value;
+            $('f_base_url').placeholder = TYPE_PLACEHOLDERS[type] || 'https://api.example.com/v1';
+        }
+
+        function showForm(cfg) {
+            editingId = cfg ? cfg.id : null;
+            go('providers/form');
+            $('formTitle').textContent = cfg ? `Edit provider: ${cfg.id}` : 'Add provider';
+            $('f_name').value = cfg ? (cfg.name || cfg.id) : '';
+            $('f_source').value = cfg ? (cfg.source || 'url') : 'url';
+            $('f_type').value = cfg ? (cfg.type || 'openai-compatible') : 'openai-compatible';
+            $('f_command').value = cfg ? (cfg.command || 'freebuff') : 'freebuff';
+            $('f_base_url').value = cfg ? (cfg.base_url || '') : '';
+            $('f_api_key').value = '';
+            $('f_api_key').placeholder = cfg && cfg.api_key ? '(keep existing key — leave blank)' : 'Bearer token (empty for local)';
+            $('f_model').value = cfg && (cfg.models || []).length ? cfg.models[0] : '';
+            $('f_enabled').checked = cfg ? cfg.enabled : true;
+            $('formMsg').textContent = '';
+            $('formMsg').className = 'form-error';
+            $('modelsHint').textContent = 'One model per provider. Want another model? Create a new provider.';
+            $('tokensMsg').textContent = '';
+            syncSourceFields();
+            updateUrlPlaceholder();
+        }
+
+        $('f_source').addEventListener('change', syncSourceFields);
+        $('f_type').addEventListener('change', updateUrlPlaceholder);
+        $('f_command').addEventListener('change', syncSourceFields);
+
+        // Password visibility toggles (eye icon) for API key + token inputs.
+        document.querySelectorAll('.pw-toggle').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const input = $(btn.dataset.target);
+                if (!input) return;
+                const show = input.type === 'password';
+                input.type = show ? 'text' : 'password';
+                btn.textContent = show ? 'visibility_off' : 'visibility';
+            });
+        });
+
+        function editFromList(btn) {
+            const provider = providers.find(p => p.id === btn.dataset.id);
+            if (provider) showForm(provider);
+        }
+
+        $('addBtn').addEventListener('click', () => showForm(null));
+        $('cancelBtn').addEventListener('click', () => go('providers'));
+
+        $('fetchModelsBtn').addEventListener('click', async () => {
+            const base_url = $('f_base_url').value.trim();
+            const api_key = $('f_api_key').value.trim();
+            if (!base_url) {
+                $('modelsHint').textContent = 'Enter a base URL first, then click Fetch.';
+                $('modelsHint').className = 'form-hint error';
+                return;
+            }
+            const btn = $('fetchModelsBtn');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="ms-icon spin">progress_activity</span>Fetching…';
+            $('modelsHint').className = 'form-hint';
+            $('modelsHint').textContent = 'Fetching models…';
+            try {
+                const resp = await fetch('/api/providers/fetch-models', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ base_url, api_key, type: $('f_type').value }),
+                });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    $('modelsHint').textContent = (data.detail || 'Could not fetch — type the model manually.');
+                    $('modelsHint').className = 'form-hint error';
+                    return;
+                }
+                const models = data.models || [];
+                $('modelOptions').innerHTML = models.map(m => `<option value="${esc(m)}"></option>`).join('');
+                if (models.length) {
+                    $('f_model').value = models[0];
+                    $('modelsHint').textContent = `${models.length} models found. Pick one (${esc(models[0])}).`;
+                }
+            } catch (e) {
+                $('modelsHint').textContent = 'Error: ' + e.message + ' — type the model manually.';
+                $('modelsHint').className = 'form-hint error';
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<span class="ms-icon">download</span>Fetch';
+            }
+        });
+
+        $('saveBtn').addEventListener('click', async () => {
+            const isCmd = $('f_source').value === 'command';
+            const name = $('f_name').value.trim();
+            if (!name) { $('formMsg').textContent = 'Name is required'; return; }
+            const model = $('f_model').value.trim();
+            const payload = {
+                source: isCmd ? 'command' : 'url',
+                name,
+                id: editingId || slugify(name) || 'provider',
+                type: isCmd ? '' : $('f_type').value,
+                command: isCmd ? $('f_command').value : '',
+                base_url: isCmd ? '' : $('f_base_url').value.trim(),
+                api_key: isCmd ? '' : $('f_api_key').value.trim(),
+                models: model ? [model] : [],
+                enabled: $('f_enabled').checked,
+            };
+            if (!isCmd && !payload.base_url) { $('formMsg').textContent = 'Base URL is required for URL providers'; return; }
+            try {
+                const url = editingId ? `/api/providers/${encodeURIComponent(editingId)}` : '/api/providers';
+                const method = editingId ? 'PUT' : 'POST';
+                const resp = await fetch(url, {
+                    method,
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                if (!resp.ok) {
+                    const err = await resp.json();
+                    $('formMsg').textContent = (err.detail) || 'Failed to save';
+                    return;
+                }
+                const saved = await resp.json();
+                await loadProviders(saved.id || payload.id);
+                go('providers');
+            } catch (e) {
+                $('formMsg').textContent = 'Error: ' + e.message;
+            }
+        });
+
+        /* ---------- Actions ---------- */
+        async function testFromList(btn) {
+            const id = btn.dataset.id;
+            btn.innerHTML = '<span class="ms-icon spin">progress_activity</span>Testing…';
+            btn.disabled = true;
+            try {
+                const resp = await fetch(`/api/providers/${encodeURIComponent(id)}/test`, { method: 'POST' });
+                const data = await resp.json();
+                alert(data.ok ? 'Connection OK: ' + data.info : data.info);
+            } catch (e) {
+                alert('Error: ' + e.message);
+            }
+            renderProviders();
+        }
+
+        async function deleteFromList(btn) {
+            const id = btn.dataset.id;
+            if (!confirm(`Delete provider '${id}'?`)) return;
+            try {
+                const resp = await fetch(`/api/providers/${encodeURIComponent(id)}`, { method: 'DELETE' });
+                if (!resp.ok) {
+                    const err = await resp.json();
+                    alert(err.detail || 'Delete failed');
+                    return;
+                }
+                if (selectedId === id) selectedId = null;
+                await loadProviders();
+                go('providers');
+            } catch (e) {
+                alert('Error: ' + e.message);
+            }
+        }
+
+        /* ---------- Priority ---------- */
+        function openPriority() {
+            go('providers/priority');
+            $('priorityMsg').textContent = '';
+            renderPriority();
+        }
+
+        $('priorityBtn').addEventListener('click', openPriority);
+
+        function renderPriority() {
+            const wrap = $('priorityList');
+            if (!providers.length) {
+                wrap.innerHTML = '<div class="history-empty">No providers to order yet.</div>';
+                return;
+            }
+            const ordered = [...providers].sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0));
+            wrap.innerHTML = ordered.map((p, i) => `
+                <div class="priority-item" data-id="${esc(p.id)}">
+                    <span class="priority-rank">${i + 1}</span>
+                    <span class="priority-name">${esc(p.name || p.id)}</span>
+                    <span class="priority-sub">${esc(p.id)} · ${p.enabled ? 'enabled' : 'disabled'}</span>
+                    <div class="priority-arrows">
+                        <button class="btn btn-secondary prio-up" ${i === 0 ? 'disabled' : ''} title="Move up"><span class="ms-icon sm">arrow_upward</span></button>
+                        <button class="btn btn-secondary prio-down" ${i === ordered.length - 1 ? 'disabled' : ''} title="Move down"><span class="ms-icon sm">arrow_downward</span></button>
+                    </div>
+                </div>`).join('');
+            wrap.querySelectorAll('.prio-up').forEach(btn => {
+                btn.addEventListener('click', () => movePriority(btn, -1));
+            });
+            wrap.querySelectorAll('.prio-down').forEach(btn => {
+                btn.addEventListener('click', () => movePriority(btn, 1));
+            });
+        }
+
+        function movePriority(btn, delta) {
+            const item = btn.closest('.priority-item');
+            const list = [...$('priorityList').children];
+            const index = list.indexOf(item);
+            const target = index + delta;
+            if (target < 0 || target >= list.length) return;
+            $('priorityList').insertBefore(list[index], target > index ? list[target].nextSibling : list[target]);
+            [...$('priorityList').children].forEach((el, i) => {
+                el.querySelector('.priority-rank').textContent = i + 1;
+                const up = el.querySelector('.prio-up');
+                const down = el.querySelector('.prio-down');
+                up.disabled = i === 0;
+                down.disabled = i === $('priorityList').children.length - 1;
+            });
+        }
+
+        $('prioritySaveBtn').addEventListener('click', async () => {
+            const order = [...$('priorityList').children].map(el => el.dataset.id);
+            if (!order.length) return;
+            try {
+                const resp = await fetch('/api/providers/order', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ order }),
+                });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    $('priorityMsg').textContent = data.detail || 'Failed to save order';
+                    return;
+                }
+                $('priorityMsg').className = 'form-success';
+                $('priorityMsg').textContent = 'Priority saved — failover will use this order';
+                await loadProviders();
+            } catch (e) {
+                $('priorityMsg').textContent = 'Error: ' + e.message;
+            }
+        });
+
+        /* ---------- Tokens (freebuff pool, inside provider form) ---------- */
+        function renderTokensList(tokens) {
+            const wrap = $('tokensList');
+            if (!tokens.length) {
+                wrap.innerHTML = '<div class="history-empty">No tokens yet. Paste one above and click "Add token".</div>';
+                return;
+            }
+            wrap.innerHTML = tokens.map(t => tokenRowHTML(t, true)).join('');
+            wrap.querySelectorAll('.token-remove').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    if (!confirm('Remove this token?')) return;
+                    try {
+                        const resp = await fetch(`/api/freebuff/tokens/${btn.dataset.index}`, { method: 'DELETE' });
+                        const data = await resp.json();
+                        if (!resp.ok) { $('tokensMsg').textContent = data.detail || 'Failed to delete'; return; }
+                        $('tokensMsg').className = 'form-success';
+                        $('tokensMsg').textContent = 'Token removed, pool reloaded';
+                        tokenSecrets = null;
+                        loadTokensStatus();
+                        loadProviderTokens();
+                    } catch (e) {
+                        $('tokensMsg').textContent = 'Error: ' + e.message;
+                    }
+                });
+            });
+        }
+
+        async function loadTokensStatus() {
+            try {
+                const resp = await fetch('/api/freebuff/tokens');
+                const data = await resp.json();
+                renderTokensList(data.tokens || []);
+            } catch (e) {
+                $('tokensMsg').textContent = 'failed to load status';
+            }
+        }
+
+        $('addTokenBtn').addEventListener('click', async () => {
+            const token = $('f_token_new').value.trim();
+            if (!token) { $('tokensMsg').textContent = 'Enter a token to add'; return; }
+            $('tokensMsg').className = 'form-error';
+            try {
+                const resp = await fetch('/api/freebuff/tokens', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token }),
+                });
+                const data = await resp.json();
+                if (!resp.ok) { $('tokensMsg').textContent = data.detail || 'Failed to save'; return; }
+                $('f_token_new').value = '';
+                $('tokensMsg').className = 'form-success';
+                $('tokensMsg').textContent = 'Token added, pool reloaded';
+                tokenSecrets = null;
+                loadTokensStatus();
+                loadProviderTokens();
+            } catch (e) {
+                $('tokensMsg').textContent = 'Error: ' + e.message;
+            }
+        });
+
+        $('f_token_new').addEventListener('keydown', e => {
+            if (e.key === 'Enter') $('addTokenBtn').click();
+        });
+
+        /* ---------- Routing (hash-based, so F5 keeps the current screen) ---------- */
+        function go(route) {
+            const target = '#/' + route;
+            if (location.hash === target) {
+                handleRoute();
+                return;
+            }
+            location.hash = target;
+        }
+
+        function handleRoute() {
+            let hash = location.hash.replace(/^#\/?/, '');
+            if (!hash) { showView('detail'); loadProviders(); return; }
+            const parts = hash.split('/').filter(Boolean);
+            const view = parts[0];
+            const param = parts.slice(1).join('/');
+            if (view === 'providers') {
+                if (param === 'form') showView('form');
+                else if (param === 'priority') { showView('priority'); renderPriority(); }
+                else { showView('detail'); loadProviders(); }
+            } else if (view === 'history') {
+                showView('history');
+                if (param) {
+                    loadHistory().then(() => openHistoryByKey(decodeURIComponent(param)));
+                } else {
+                    closeHistoryModal(false);
+                    loadHistory();
+                }
+            } else if (view === 'settings') {
+                loadSettings();
+            } else if (view === 'about') {
+                loadAbout();
+            } else {
+                showView('detail');
+                loadProviders();
+            }
+        }
+
+        window.addEventListener('hashchange', handleRoute);
+
+        $('providersNav').addEventListener('click', () => go('providers'));
+        $('settingsNav').addEventListener('click', () => go('settings'));
+        $('aboutNav').addEventListener('click', () => go('about'));
+        $('historyNav').addEventListener('click', () => go('history'));
+
+        async function loadSettings() {
+            showView('settings');
+            try {
+                const [hist, tok] = await Promise.all([
+                    fetch('/api/history').then(r => r.json()).catch(() => null),
+                    fetch('/api/freebuff/tokens').then(r => r.json()).catch(() => null),
+                ]);
+                $('settingsHistoryMode').textContent = (hist && hist.stats && hist.stats.inject_mode) || '—';
+                $('settingsHistoryDir').textContent = (hist && hist.stats && hist.stats.dir) || '—';
+                $('settingsTokenSource').textContent = (tok && tok.source) || '—';
+            } catch (e) { /* keep defaults */ }
+            $('settingsProviders').textContent = providers.length ? `${providers.length} configured` : '—';
+            loadToolMappingContributions();
+        }
+
+        async function loadToolMappingContributions() {
+            const wrap = $('toolMappingContributions');
+            try {
+                const resp = await fetch('/api/tool-mappings/contributions');
+                const data = await resp.json();
+                const rows = (data.contributions || []).filter(x => x.status === 'pending');
+                const menuBadge = $('settingsContributionBadge'); const titleBadge = $('contributionTitleBadge');
+                menuBadge.classList.toggle('hidden', !rows.length); titleBadge.classList.toggle('hidden', !rows.length);
+                menuBadge.textContent = rows.length; titleBadge.textContent = `${rows.length} pending`;
+                $('settingsNav').classList.toggle('has-pending', !!rows.length);
+                if (!rows.length) { wrap.textContent = 'No pending mappings. Repairs can propose a metadata-only contribution here.'; return; }
+                wrap.innerHTML = rows.map(x => `<div class="mapping-contribution"><div><strong class="mono">${esc(x.upstream_tool)} → ${esc(x.client_tool)}</strong><p><b>Client:</b> ${esc(x.client)}. <b>Argument names:</b> ${esc(JSON.stringify(x.argument_mapping || {}))}</p><p>Reason: compiler repair produced a valid client tool call after a naming/shape mismatch. This Issue contains only the names above — never paths, commands, prompts, source, tool results, or credentials.</p></div><div><button class="btn btn-primary mapping-approve" data-id="${esc(x.id)}">Approve & open Issue</button> <button class="btn btn-secondary mapping-deny" data-id="${esc(x.id)}">Deny</button></div></div>`).join('');
+                wrap.querySelectorAll('.mapping-approve').forEach(btn => btn.addEventListener('click', async () => { const r = await fetch(`/api/tool-mappings/contributions/${btn.dataset.id}/approve`, {method:'POST'}); const d = await r.json(); if (!r.ok) return alert(d.detail || 'Could not approve'); window.open(d.issue_url, '_blank', 'noopener'); loadToolMappingContributions(); }));
+                wrap.querySelectorAll('.mapping-deny').forEach(btn => btn.addEventListener('click', async () => { await fetch(`/api/tool-mappings/contributions/${btn.dataset.id}/deny`, {method:'POST'}); loadToolMappingContributions(); }));
+            } catch (_) { wrap.textContent = 'Could not load tool mapping contributions.'; }
+        }
+
+        /* ---------- Figma tokens (Settings, pool) ---------- */
+        let figmaTokenSecrets = null;
+        let figmaTokenFallback = [];
+
+        function figmaTokenRowHTML(t) {
+            return `
+                <div class="token-item" data-index="${t.index}">
+                    <span class="token-chip" data-masked="${esc(t.masked)}">${esc(t.masked)}</span>
+                    <span class="token-actions">
+                        <button type="button" class="pw-toggle pw-toggle-sm token-eye ms-icon" title="Show / hide token">visibility</button>
+                        <button class="btn btn-danger token-remove" data-index="${t.index}" title="Remove"><span class="ms-icon">delete_outline</span></button>
+                    </span>
+                </div>`;
+        }
+
+        async function loadFigmaTokens() {
+            try {
+                const resp = await fetch('/api/figma/tokens?reveal=1');
+                const data = await resp.json();
+                if (!resp.ok) throw new Error(data.detail || 'Failed to load Figma tokens');
+                figmaTokenSecrets = Array.isArray(data.tokens) ? data.tokens : [];
+                figmaTokenFallback = Array.isArray(data.fallback) ? data.fallback : [];
+                renderFigmaTokens();
+            } catch (e) {
+                $('figmaTokensList').innerHTML = '<div class="history-empty">Could not load Figma tokens.</div>';
+            }
+        }
+
+        function renderFigmaTokens() {
+            const wrap = $('figmaTokensList');
+            const tokens = figmaTokenSecrets || [];
+            const fallback = figmaTokenFallback;
+            const rows = tokens.length
+                ? tokens.map(figmaTokenRowHTML).join('')
+                : '<div class="history-empty">No tokens yet. Paste one above and click "Add token".</div>';
+            const fallbackRows = fallback.length
+                ? `<div class="figma-fallback">Read-only fallback (${fallback.map(f => esc(f.masked)).join(', ')} — from env / legacy file, not editable here)</div>`
+                : '';
+            wrap.innerHTML = rows + fallbackRows;
+            wrap.querySelectorAll('.token-remove').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    if (!confirm('Remove this Figma token?')) return;
+                    try {
+                        const resp = await fetch(`/api/figma/tokens/${btn.dataset.index}`, { method: 'DELETE' });
+                        const data = await resp.json();
+                        if (!resp.ok) { $('figmaTokenMsg').textContent = data.detail || 'Failed to remove'; return; }
+                        $('figmaTokenMsg').className = 'form-success';
+                        $('figmaTokenMsg').textContent = 'Token removed';
+                        loadFigmaTokens();
+                    } catch (e) {
+                        $('figmaTokenMsg').textContent = 'Error: ' + e.message;
+                    }
+                });
+            });
+        }
+
+        const figmaTokenAddBtn = $('figmaTokenAddBtn');
+        if (figmaTokenAddBtn) figmaTokenAddBtn.addEventListener('click', async () => {
+            const token = $('figmaTokenNew').value.trim();
+            if (!token) { $('figmaTokenMsg').textContent = 'Enter a token to add'; return; }
+            $('figmaTokenMsg').className = 'form-error';
+            try {
+                const resp = await fetch('/api/figma/tokens', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token }),
+                });
+                const data = await resp.json();
+                if (!resp.ok) { $('figmaTokenMsg').textContent = data.detail || 'Failed to save'; return; }
+                $('figmaTokenNew').value = '';
+                $('figmaTokenMsg').className = 'form-success';
+                $('figmaTokenMsg').textContent = 'Token added';
+                loadFigmaTokens();
+            } catch (e) {
+                $('figmaTokenMsg').textContent = 'Error: ' + e.message;
+            }
+        });
+
+        const figmaTokenNew = $('figmaTokenNew');
+        if (figmaTokenNew) figmaTokenNew.addEventListener('keydown', e => {
+            if (e.key === 'Enter') $('figmaTokenAddBtn').click();
+        });
+
+        // Eye toggle for figma tokens (reuse the global delegation: .token-eye).
+
+        /* ---------- Tool permissions (Settings) ---------- */
+        let toolPerms = {};
+        let toolPermLabels = {};
+        let toolModes = ['allow', 'ask', 'deny'];
+        const MODE_LABELS = { allow: 'Allow', ask: 'Ask', deny: 'Deny' };
+
+        // Group tools into visible categories so helpers / browser / figma are
+        // easy to find instead of one flat alphabetical list.
+        const TOOL_GROUPS = [
+            { label: 'Read / write file', icon: 'description', tools: ['read_file', 'read_file_lines', 'write_file', 'edit_file'] },
+            { label: 'Search', icon: 'search', tools: ['list_dir', 'glob', 'grep'] },
+            { label: 'Git', icon: 'commit', tools: ['git_status', 'git_diff'] },
+            { label: 'Shell', icon: 'terminal', tools: ['bash'] },
+            { label: 'Fetch (URL)', icon: 'link', tools: ['http_get'] },
+            { label: 'Encode / decode', icon: 'swap_horiz', tools: ['base64_encode', 'base64_decode', 'url_encode', 'url_decode'] },
+            { label: 'Utils', icon: 'handyman', tools: ['uuid', 'timestamp', 'json_parse'] },
+            { label: 'Chrome DevTools', icon: 'public', tools: ['browser_open', 'browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_eval', 'browser_screenshot', 'browser_close'] },
+            { label: 'Figma', icon: 'palette', tools: ['figma_get_file', 'figma_get_node', 'figma_export_image'] },
+        ];
+
+        const TOOL_GROUP_INDEX = {};
+        TOOL_GROUPS.forEach((g, i) => g.tools.forEach(t => { TOOL_GROUP_INDEX[t] = i; }));
+
+        // What each tool does — shown as a helper line under the tool name so
+        // the user knows what they are approving.
+        const TOOL_DESCRIPTIONS = {
+            'read_file': 'Read a text file (content capped)',
+            'read_file_lines': 'Read a line range with line numbers',
+            'write_file': 'Create / overwrite a text file',
+            'edit_file': 'Targeted edit: replace old_string with new_string',
+            'list_dir': 'List a directory\'s entries',
+            'glob': 'Match files by glob pattern',
+            'grep': 'Regex search file contents under a path',
+            'bash': 'Run a shell command (timeout enforced)',
+            'git_status': 'Git working-tree status',
+            'git_diff': 'Git diff of changes',
+            'http_get': 'Fetch a URL (network access)',
+            'base64_encode': 'Encode text to base64',
+            'base64_decode': 'Decode base64 to text',
+            'url_encode': 'Percent-encode a URL/text',
+            'url_decode': 'Percent-decode a URL/text',
+            'uuid': 'Generate a random UUID',
+            'timestamp': 'Current UTC time',
+            'json_parse': 'Validate + pretty-print JSON',
+            'browser_open': 'Open a URL in headless Chrome',
+            'browser_navigate': 'Navigate the browser to a URL',
+            'browser_snapshot': 'Read the current page as text',
+            'browser_click': 'Click an element by CSS selector',
+            'browser_type': 'Type text into an input',
+            'browser_eval': 'Run JavaScript in the page',
+            'browser_screenshot': 'Save a full-page screenshot',
+            'browser_close': 'Release the headless browser',
+            'figma_get_file': 'Read a Figma file structure (pages, frames, components)',
+            'figma_get_node': 'Read a specific node (a frame / component / element) by its node id',
+            'figma_export_image': 'Export a node as an image (PNG/JPEG)',
+        };
+
+        async function loadToolPerms() {
+            try {
+                const resp = await fetch('/api/tools/permissions');
+                const data = await resp.json();
+                toolPerms = data.permissions || {};
+                toolPermLabels = data.labels || {};
+                toolModes = data.modes || ['allow', 'ask', 'deny'];
+                renderToolPerms();
+            } catch (e) {
+                $('toolPermsList').innerHTML = '<div class="history-loading">failed to load permissions</div>';
+            }
+        }
+
+        function renderToolPerms() {
+            const wrap = $('toolPermsList');
+            const unknown = Object.keys(toolPerms).filter(t => TOOL_GROUP_INDEX[t] === undefined).sort();
+            const rowHTML = tool => {
+                const label = toolPermLabels[tool] || tool;
+                const desc = TOOL_DESCRIPTIONS[tool] || '';
+                const cur = toolPerms[tool] || 'allow';
+                const segs = toolModes.map(m =>
+                    `<button type="button" class="perm-seg ${cur === m ? 'active' : ''}" data-tool="${esc(tool)}" data-mode="${m}">${MODE_LABELS[m] || m}</button>`
+                ).join('');
+                const help = desc
+                    ? `<button type="button" class="perm-help ms-icon sm" data-help="${esc(desc)}" title="Hover for info">help_outline</button>`
+                    : '';
+                return `<div class="perm-row">
+                    <span class="perm-main">
+                        <span class="perm-name">${esc(label)} ${help}<span class="perm-key mono">${esc(tool)}</span></span>
+                    </span>
+                    <span class="perm-segs">${segs}</span>
+                </div>`;
+            };
+            const sections = TOOL_GROUPS.map(g => {
+                const rows = g.tools
+                    .filter(t => t in toolPerms)
+                    .sort()
+                    .map(rowHTML)
+                    .join('');
+                return rows
+                    ? `<div class="perm-group"><div class="perm-group-title"><span class="ms-icon sm">${g.icon}</span>${esc(g.label)}</div>${rows}</div>`
+                    : '';
+            }).join('');
+            const unknownRows = unknown.map(rowHTML).join('');
+            wrap.innerHTML = sections + (unknownRows ? `<div class="perm-group"><div class="perm-group-title"><span class="ms-icon sm">extension</span>Other</div>${unknownRows}</div>` : '');
+            wrap.querySelectorAll('.perm-seg').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const tool = btn.dataset.tool;
+                    const mode = btn.dataset.mode;
+                    toolPerms[tool] = mode;
+                    wrap.querySelectorAll(`.perm-seg[data-tool="${esc(tool)}"]`).forEach(b =>
+                        b.classList.toggle('active', b.dataset.mode === mode));
+                });
+            });
+        }
+
+        // Hover toast for the ? helper icons (tool descriptions).
+        let _helpToast = null;
+        document.addEventListener('mouseover', e => {
+            const btn = e.target.closest('.perm-help');
+            if (!btn) { if (_helpToast) { _helpToast.remove(); _helpToast = null; } return; }
+            if (!_helpToast) {
+                _helpToast = document.createElement('div');
+                _helpToast.className = 'help-toast';
+                document.body.appendChild(_helpToast);
+            }
+            _helpToast.textContent = btn.dataset.help || '';
+            const rect = btn.getBoundingClientRect();
+            const toastRect = _helpToast.getBoundingClientRect();
+            let left = rect.left + rect.width / 2 - toastRect.width / 2;
+            left = Math.max(8, Math.min(left, window.innerWidth - toastRect.width - 8));
+            let top = rect.bottom + 8;
+            if (top + toastRect.height > window.innerHeight - 8) {
+                top = rect.top - toastRect.height - 8;
+            }
+            _helpToast.style.left = left + 'px';
+            _helpToast.style.top = top + 'px';
+        });
+        document.addEventListener('mouseout', e => {
+            if (e.target.closest('.perm-help')) { if (_helpToast) { _helpToast.remove(); _helpToast = null; } }
+        });
+
+        async function loadAbout() {
+            showView('about');
+        }
+
+        /* ---------- History ---------- */
+        let historyProjects = [];
+        let historySelected = null;
+        let historySessionSelected = null;
+        /* ---------- Custom dropdown component ---------- */
+        let _filterDDs = [];
+
+        function closeAllDropdowns() {
+            _filterDDs.forEach(d => { if (d.pop) d.pop.classList.add('hidden'); });
+        }
+
+        document.addEventListener('click', closeAllDropdowns);
+
+        function customDropdown(containerId, opts) {
+            const container = $(containerId);
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'filter-dd-btn';
+            btn.innerHTML = `<span class="ms-icon sm">${opts.icon}</span><span class="filter-dd-value">${esc(opts.allLabel)}</span><span class="ms-icon sm">expand_more</span>`;
+            btn.dataset.value = '';
+            const pop = document.createElement('div');
+            pop.className = 'filter-dd-pop hidden';
+            container.append(btn, pop);
+
+            function render() {
+                const cur = btn.dataset.value;
+                pop.innerHTML = opts.items.map(it => {
+                    const active = it.value === cur ? ' active' : '';
+                    const hint = it.hint ? `<span class="filter-dd-hint">${esc(it.hint)}</span>` : '';
+                    return `<button type="button" class="filter-dd-opt${active}" data-value="${esc(it.value)}">${esc(it.label)}${hint}</button>`;
+                }).join('');
+            }
+
+            btn.addEventListener('click', e => {
+                e.stopPropagation();
+                const open = !pop.classList.contains('hidden');
+                closeAllDropdowns();
+                if (!open) { pop.classList.remove('hidden'); render(); }
+            });
+
+            pop.addEventListener('click', e => {
+                const opt = e.target.closest('.filter-dd-opt');
+                if (!opt) return;
+                btn.dataset.value = opt.dataset.value;
+                btn.querySelector('.filter-dd-value').textContent = opt.label || opt.textContent.replace(/\s+/g, ' ').trim();
+                pop.classList.add('hidden');
+                opts.onSelect(opt.dataset.value);
+            });
+
+            const dd = { container, btn, pop, setItems: (items) => { opts.items = items; }, setValue: (v, l) => { btn.dataset.value = v; btn.querySelector('.filter-dd-value').textContent = l; } };
+            _filterDDs.push(dd);
+            return dd;
+        }
+
+        const historyFilters = { project: '', source: '', time: '' };
+
+        $('historyRefreshBtn').addEventListener('click', loadHistory);
+        let historyScanInFlight = false;
+
+        async function loadHistory(render = true) {
+            try {
+                const resp = await fetch('/api/history');
+                const data = await resp.json();
+                historyProjects = data.conversations || [];
+                if (historySelected && !historyProjects.some(p => p.project_key === historySelected)) {
+                    historySelected = null;
+                }
+                if (render) {
+                    populateProjectFilter();
+                    populateSourceFilter();
+                    renderHistoryProjects();
+                }
+            } catch (e) {
+                $('historyProjects').innerHTML = '<div class="history-loading">API connection error</div>';
+            }
+        }
+
+        const SOURCE_LABELS = { claude: 'Claude Code', codex: 'Codex CLI', api: 'API client', gateway: 'Gateway' };
+        const sourceLabel = s => SOURCE_LABELS[s] || s || 'Gateway';
+
+        function projectSourceLabels(p) {
+            const labels = new Set((p.providers || []));
+            (p.sources || []).forEach(s => labels.add(sourceLabel(s)));
+            return labels;
+        }
+
+        function relTime(ts) {
+            if (!ts) return '';
+            const diff = Date.now() - ts;
+            const min = Math.floor(diff / 60000);
+            if (min < 1) return 'just now';
+            if (min < 60) return `${min}m ago`;
+            const h = Math.floor(min / 60);
+            if (h < 24) return `${h}h ago`;
+            const d = Math.floor(h / 24);
+            if (d < 30) return `${d}d ago`;
+            const mo = Math.floor(d / 30);
+            if (mo < 12) return `${mo}mo ago`;
+            return `${Math.floor(mo / 12)}y ago`;
+        }
+
+        function filteredHistory() {
+            const now = Date.now();
+            const timeLimits = { today: 86400000, '7d': 7 * 86400000, '30d': 30 * 86400000, '1y': 365 * 86400000 };
+            return historyProjects
+                .filter(p => {
+                    if (historyFilters.project && p.project_key !== historyFilters.project) return false;
+                    if (historyFilters.source && sourceLabel(p.source) !== historyFilters.source) return false;
+                    if (historyFilters.time && p.last_ts) {
+                        const limit = timeLimits[historyFilters.time] || 0;
+                        if (now - p.last_ts > limit) return false;
+                    }
+                    return true;
+                })
+                .sort((a, b) => (b.last_ts || 0) - (a.last_ts || 0));
+        }
+
+        function populateProjectFilter() {
+            // The main list is conversations, so multiple rows share one
+            // project. The project filter itself must contain each project once.
+            const projects = new Map();
+            historyProjects.forEach(p => {
+                if (!projects.has(p.project_key)) {
+                    projects.set(p.project_key, p.project || p.project_key);
+                }
+            });
+            const items = [...projects.entries()]
+                .map(([value, label]) => ({ value, label, hint: '' }))
+                .sort((a, b) => a.label.localeCompare(b.label));
+            filterProject.setItems([{ value: '', label: 'All projects' }, ...items]);
+        }
+
+        function populateSourceFilter() {
+            const labels = new Set();
+            historyProjects.forEach(p => labels.add(sourceLabel(p.source)));
+            filterSource.setItems([{ value: '', label: 'All AI sources' }, ...[...labels].sort().map(l => ({ value: l, label: l }))]);
+        }
+
+        // Wire up the 3 custom dropdowns
+        const filterProject = customDropdown('filterProjectDD', {
+            icon: 'folder', allLabel: 'All projects', items: [{ value: '', label: 'All projects' }],
+            onSelect: v => { historyFilters.project = v; renderHistoryProjects(); },
+        });
+        const filterSource = customDropdown('filterSourceDD', {
+            icon: 'smart_toy', allLabel: 'All AI sources', items: [{ value: '', label: 'All AI sources' }],
+            onSelect: v => { historyFilters.source = v; renderHistoryProjects(); },
+        });
+        const filterTime = customDropdown('filterTimeDD', {
+            icon: 'schedule', allLabel: 'Any time', items: [
+                { value: '', label: 'Any time' },
+                { value: 'today', label: 'Today' },
+                { value: '7d', label: 'Last 7 days' },
+                { value: '30d', label: 'Last 30 days' },
+                { value: '1y', label: 'Last year' },
+            ],
+            onSelect: v => { historyFilters.time = v; renderHistoryProjects(); },
+        });
+
+        function renderHistoryProjects() {
+            const wrap = $('historyProjects');
+            const list = filteredHistory();
+            if (!historyProjects.length) {
+                wrap.innerHTML = '<div class="history-empty">No history yet. Chatting through the gateway automatically saves per project.</div>';
+                return;
+            }
+            if (!list.length) {
+                wrap.innerHTML = '<div class="history-empty">No conversations match the current filters.</div>';
+                return;
+            }
+            wrap.innerHTML = list.map(p => {
+                const title = p.title || 'Untitled conversation';
+                const path = (p.paths && p.paths[0]) || p.project || '';
+                const rel = relTime(p.last_ts);
+                const badges = `<span class="history-source-badge">${esc(sourceLabel(p.source))}</span>`;
+                return `
+                <button class="history-project" data-key="${esc(p.project_key)}" data-session="${esc(p.id)}">
+                    <span class="history-p-top">
+                        <span class="history-p-name">${esc(title)}</span>
+                        <span class="history-p-count">${p.count}</span>
+                    </span>
+                    <span class="history-p-meta">${esc(path)}${rel ? ' · ' + esc(rel) : ''}</span>
+                    <span class="history-p-sources">${badges}</span>
+                </button>`;
+            }).join('');
+            wrap.querySelectorAll('[data-session]').forEach(btn => btn.addEventListener('click', () => openHistorySession(btn.dataset.key, btn.dataset.session)));
+        }
+
+
+        function openHistoryByKey(key) {
+            historySelected = key;
+            historySessionSelected = null;
+            const project = historyProjects.find(p => p.key === key);
+            $('modalTitle').textContent = project ? (project.title || project.folder) : key;
+            $('modalSub').textContent = `${key} · ${project ? project.count + ' messages' : ''}`;
+            $('historyModal').classList.remove('hidden');
+            loadHistorySessions(key);
+        }
+
+        function closeHistoryModal(updateUrl = true) {
+            $('historyModal').classList.add('hidden');
+            historySelected = null;
+            historySessionSelected = null;
+            if (updateUrl) go('history');
+        }
+
+        $('modalCloseBtn').addEventListener('click', closeHistoryModal);
+        $('historyModal').addEventListener('click', e => {
+            if (e.target === $('historyModal')) closeHistoryModal();
+        });
+        document.addEventListener('keydown', e => {
+            if (e.key === 'Escape') closeHistoryModal();
+        });
+        $('scrollBottomBtn').addEventListener('click', () => {
+            $('modalBody').scrollTop = $('modalBody').scrollHeight;
+        });
+
+        $('modalDeleteBtn').addEventListener('click', async () => {
+            if (!historySelected) return;
+            if (!confirm(`Delete all history of project '${historySelected}'?`)) return;
+            try {
+                await fetch(`/api/history/${encodeURIComponent(historySelected)}`, { method: 'DELETE' });
+                closeHistoryModal();
+            } catch (e) {
+                alert('Error: ' + e.message);
+            }
+        });
+
+        async function loadHistorySessions(key) {
+            const wrap = $('modalBody');
+            wrap.innerHTML = '<div class="history-loading">Loading conversations…</div>';
+            try {
+                const resp = await fetch(`/api/history/${encodeURIComponent(key)}/sessions`);
+                const data = await resp.json();
+                const sessions = data.sessions || [];
+                wrap.innerHTML = sessions.map(s => `<button class="history-project" data-session="${esc(s.id)}"><span class="history-p-top"><span class="history-p-name">${esc(s.title || 'Untitled conversation')}</span><span class="history-p-count">${s.count}</span></span><span class="history-p-meta">${esc(sourceLabel(s.source))} · ${esc(relTime(s.last_ts))}</span></button>`).join('') || '<div class="history-empty">No conversations yet.</div>';
+                wrap.querySelectorAll('[data-session]').forEach(btn => btn.addEventListener('click', () => openHistorySession(key, btn.dataset.session)));
+            } catch (e) {
+                wrap.innerHTML = '<div class="history-loading">failed to load conversation</div>';
+            }
+        }
+
+        async function openHistorySession(key, sessionId) {
+            historySessionSelected = sessionId;
+            historySelected = key;
+            $('modalTitle').textContent = 'Conversation';
+            $('historyModal').classList.remove('hidden');
+            const wrap = $('modalBody');
+            wrap.innerHTML = '<div class="history-loading">Loading conversation…</div>';
+            const resp = await fetch(`/api/history/${encodeURIComponent(key)}?session_id=${encodeURIComponent(sessionId)}&limit=1000`);
+            const data = await resp.json();
+            renderHistoryMessages(data.records || []);
+            wrap.scrollTop = wrap.scrollHeight;
+        }
+
+        /* ---------- Chat rendering (WhatsApp-style) ---------- */
+        const MAX_BUBBLE_CHARS = 600;
+
+        // Collapse runs of blank lines so text blocks stay tight.
+        const collapseBlank = text => String(text).replace(/\n{3,}/g, '\n\n');
+
+        function renderTextBlock(text) {
+            text = collapseBlank(text);
+            if (text.length <= MAX_BUBBLE_CHARS) {
+                return `<div class="chat-content">${esc(text)}</div>`;
+            }
+            const visible = text.slice(0, MAX_BUBBLE_CHARS);
+            return `<div class="chat-content">
+                <span class="chat-short">${esc(visible)}</span>
+                <span class="chat-more hidden">${esc(text.slice(MAX_BUBBLE_CHARS))}</span>
+                <button class="show-more-btn" onclick="toggleShowMore(this)">Show more <span class="ms-icon sm">expand_more</span></button>
+            </div>`;
+        }
+
+        function toggleShowMore(btn) {
+            const wrap = btn.parentElement;
+            const more = wrap.querySelector('.chat-more');
+            const isHidden = more.classList.contains('hidden');
+            more.classList.toggle('hidden', !isHidden);
+            btn.innerHTML = isHidden
+                ? 'Show less <span class="ms-icon sm">expand_less</span>'
+                : 'Show more <span class="ms-icon sm">expand_more</span>';
+        }
+
+        function renderBubble(r) {
+            const role = r.role === 'user' ? 'user' : 'assistant';
+            const time = r.ts ? new Date(r.ts).toLocaleString('en-US') : '';
+            const meta = r.meta || {};
+            // Show the provider name for gateway chats (e.g. "FreeBuff") or the AI tool name.
+            const label = meta.provider || sourceLabel(meta.source || 'gateway');
+            const srcBadge = `<span class="history-source-badge">${esc(label)}</span>`;
+            const model = r.model ? `<span class="history-model">${esc(r.model)}</span>` : '';
+
+            const thinking = r.thinking ? `
+                <details class="chat-collapse thinking">
+                    <summary><span class="ms-icon sm">psychology</span>Thinking</summary><pre>${esc(r.thinking)}</pre>
+                </details>` : '';
+
+            const tools = (r.tool_calls || []).map(tc => {
+                if (!tc || typeof tc !== 'object') return '';
+                const fn = tc.function || {};
+                const name = esc(fn.name || tc.name || 'tool');
+                const args = renderToolArgs(name, fn.arguments);
+                return `<details class="chat-collapse tool" open>
+                    <summary><span class="ms-icon sm">construction</span>${name}</summary>${args}</details>`;
+            }).join('');
+
+            const content = r.content ? renderChatContent(r.content) : '';
+
+            return `
+                <div class="chat-msg ${role}">
+                    <div class="chat-bubble ${role}">
+                        <div class="chat-msg-head">
+                            <span class="chat-role">${role === 'user' ? '<span class="ms-icon sm">person</span> You' : '<span class="ms-icon sm">smart_toy</span> AI'}</span>
+                            ${srcBadge}${model}<span class="chat-time">${esc(time)}</span>
+                        </div>
+                        ${content}
+                        ${thinking}
+                        ${tools}
+                    </div>
+                </div>`;
+        }
+
+        function renderContentWithToolResults(content) {
+            const parts = [];
+            let buffer = '';
+            let openTool = null;
+            const lines = String(content).split('\n');
+            for (const line of lines) {
+                const m = line.match(/^\[(tool_result|tool error)\](?:\s+)?(.*)$/);
+                if (m) {
+                    if (buffer) { parts.push({ type: 'text', text: buffer }); buffer = ''; }
+                    openTool = { type: m[1] === 'tool error' ? 'tool_error' : 'tool_result', text: m[2] };
+                    parts.push(openTool);
+                } else if (openTool) {
+                    openTool.text += (openTool.text ? '\n' : '') + line;
+                } else {
+                    buffer += (buffer ? '\n' : '') + line;
+                }
+            }
+            if (buffer) parts.push({ type: 'text', text: buffer });
+
+            return parts.map(p => {
+                if (p.type === 'text') {
+                    return renderTextBlock(p.text);
+                }
+                const label = p.type === 'tool_error'
+                    ? '<span class="ms-icon sm">error_outline</span> Tool error'
+                    : '<span class="ms-icon sm">description</span> Tool result';
+                const body = renderTextBlock(p.text);
+                return `<details class="chat-collapse tool-result"><summary>${label}</summary><div class="chat-tool-body">${body}</div></details>`;
+            }).join('');
+        }
+
+        /* AI-tool XML wrapper blocks (Claude Code / Codex / IDE context) rendered
+           as collapsible details — same pattern as Thinking / Tool Result. */
+        const CONTENT_TAG_META = {
+            'system-reminder': { label: 'System reminder', icon: 'info', cls: 'sysrmd' },
+            'ide_opened_file': { label: 'IDE opened file', icon: 'description', cls: 'idefile' },
+            'local-command-caveat': { label: 'Local command caveat', icon: 'warning', cls: 'cmdcc' },
+            'retrieval_status': { label: 'Retrieval status', icon: 'search', cls: 'retr' },
+            'recommended_plugins': { label: 'Available plugins', icon: 'extension', cls: 'sysrmd' },
+            'environment_context': { label: 'IDE environment', icon: 'desktop_windows', cls: 'idefile' },
+        };
+
+        function renderChatContent(content) {
+            if (!content) return '';
+            const text = String(content);
+            // Codex often prefixes the real request with Markdown IDE context
+            // instead of XML tags. Keep that noisy context available but folded.
+            const ideContext = text.match(/^# Context from my IDE setup:\s*([\s\S]*?)^## My request:\s*\n?([\s\S]*)$/m);
+            if (ideContext) {
+                const contextBody = '# Context from my IDE setup:\n' + ideContext[1].trim();
+                return `<details class="chat-collapse content-tag idefile"><summary><span class="ms-icon sm">desktop_windows</span>IDE environment</summary>${renderTextBlock(contextBody)}</details>${renderContentWithToolResults(ideContext[2].trim())}`;
+            }
+            const tagRe = /<(system-reminder|ide_opened_file|local-command-caveat|retrieval_status|recommended_plugins|environment_context)\b[^>]*>(.*?)<\/\1>/gsi;
+            const parts = [];
+            let lastIdx = 0;
+            let m;
+            tagRe.lastIndex = 0;
+            while ((m = tagRe.exec(text)) !== null) {
+                if (m.index > lastIdx) parts.push({ type: 'text', text: text.slice(lastIdx, m.index) });
+                const name = m[1].toLowerCase();
+                const meta = CONTENT_TAG_META[name] || { label: name, icon: 'info', cls: 'tag' };
+                parts.push({ type: 'tag', meta, text: m[2] });
+                lastIdx = m.index + m[0].length;
+            }
+            if (lastIdx < text.length) parts.push({ type: 'text', text: text.slice(lastIdx) });
+
+            // Unclosed <codex_internal_context ...> tail (no closing tag).
+            const finalParts = [];
+            for (const p of parts) {
+                if (p.type === 'text') {
+                    const cm = p.text.match(/(<codex_internal_context\b[^>]*>)(.*)/si);
+                    if (cm && cm[1]) {
+                        const before = p.text.slice(0, p.text.includes(cm[1]) ? p.text.indexOf(cm[1]) : 0);
+                        if (before.trim()) finalParts.push({ type: 'text', text: before });
+                        finalParts.push({ type: 'tag', meta: { label: 'Codex context', icon: 'psychology', cls: 'codex' }, text: cm[2] });
+                    } else {
+                        finalParts.push(p);
+                    }
+                } else {
+                    finalParts.push(p);
+                }
+            }
+
+            return finalParts.map(p => {
+                if (p.type === 'tag') {
+                    const body = renderTextBlock(p.text);
+                    return `<details class="chat-collapse content-tag ${p.meta.cls}"><summary><span class="ms-icon sm">${p.meta.icon}</span>${p.meta.label}</summary>${body}</details>`;
+                }
+                return renderContentWithToolResults(p.text);
+            }).join('');
+        }
+
+        /* Tool call arguments: show bash commands as `$ ...` and file paths as
+           paths instead of raw JSON; other args pretty-printed. */
+        function renderToolArgs(name, rawArgs) {
+            if (!rawArgs) return '';
+            let parsed = null;
+            try { parsed = JSON.parse(rawArgs); } catch (e) { parsed = null; }
+            if (parsed && typeof parsed === 'object') {
+                if (parsed.command) {
+                    const desc = parsed.description
+                        ? `<div class="tool-command-desc">${esc(parsed.description)}</div>`
+                        : '';
+                    return `<div class="tool-command-block">${desc}<pre class="tool-command-line">$ ${esc(parsed.command)}</pre></div>`;
+                }
+                if (parsed.path || parsed.pattern) {
+                    const arg = parsed.path || parsed.pattern;
+                    return `<div class="tool-command-block"><span class="tool-command-desc">${esc(name)}</span><pre class="tool-command-line">${esc(arg)}</pre></div>`;
+                }
+                return `<pre class="tool-args-json">${esc(JSON.stringify(parsed, null, 2))}</pre>`;
+            }
+            return `<pre class="tool-args-json">${esc(rawArgs)}</pre>`;
+        }
+
+        function renderHistoryMessages(records) {
+            const wrap = $('modalBody');
+            if (!records.length) {
+                wrap.innerHTML = '<div class="history-empty">Project is empty or has no messages yet.</div>';
+                return;
+            }
+            wrap.innerHTML = records.map(renderBubble).join('');
+        }
+
+        /* ---------- Scan other AI history ---------- */
+        $('scanBtn').addEventListener('click', runScan);
+
+        async function runScan(silent = false) {
+            if (historyScanInFlight) return;
+            historyScanInFlight = true;
+            const btn = $('scanBtn');
+            const res = $('scanResult');
+            if (!silent) {
+                btn.disabled = true;
+                btn.innerHTML = '<span class="ms-icon spin">progress_activity</span>Scanning…';
+                res.className = 'history-scan-result';
+                res.textContent = 'Scanning local Claude Code / Codex history…';
+            }
+            try {
+                const resp = await fetch('/api/history/scan', { method: 'POST' });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    res.className = 'history-scan-result error';
+                    res.textContent = 'Error: ' + (data.detail || ('HTTP ' + resp.status));
+                    return;
+                }
+                const lines = (data.sources || []).map(s => {
+                    const skipped = s.files_skipped > 0 ? ` (skipped ${s.files_skipped} already imported)` : '';
+                    return `${s.source}: ${s.files_imported} session → ${s.records_imported} messages${skipped}`;
+                });
+                res.className = 'history-scan-result success';
+                res.textContent = 'Scan complete — ' + lines.join(' · ') +
+                    ` · Total ${data.records_imported} new messages`;
+                // Keep an open conversation live instead of only refreshing the
+                // project cards behind its modal.
+                const openProject = historySelected;
+                const route = location.hash.replace(/^#\/?/, '');
+                const historyOpen = route === 'history' || route.startsWith('history/');
+                await loadHistory(historyOpen);
+                if (historyOpen && openProject && historySelected === openProject) {
+                    if (historySessionSelected) await openHistorySession(openProject, historySessionSelected);
+                    else await loadHistorySessions(openProject);
+                }
+            } catch (e) {
+                res.className = 'history-scan-result error';
+                res.textContent = 'Scan error: ' + e.message;
+            } finally {
+                historyScanInFlight = false;
+                btn.disabled = false;
+                btn.innerHTML = '<span class="ms-icon">search</span>Scan other AI';
+            }
+        }
+
+        // External history is synced by the gateway. Refresh previews in the
+        // background from every visible dashboard view, but re-render only
+        // History itself so Provider/Settings scroll positions never jump.
+        setInterval(() => {
+            const route = location.hash.replace(/^#\/?/, '');
+            if (!document.hidden) {
+                const historyVisible = route === 'history' || route.startsWith('history/');
+                loadHistory(historyVisible && !historySelected);
+            }
+        }, 20000);
+
+        /* ---------- Init ---------- */
+        handleRoute();
+        // Start the preview cache immediately. This also makes a fresh
+        // dashboard load observable without waiting for the 20-second timer.
+        loadHistory(false);
+    </script>
+</body>
+</html>

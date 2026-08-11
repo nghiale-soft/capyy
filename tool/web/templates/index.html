@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Token Getter ✨</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="bg-deco">
+        <span class="deco-item deco-star" style="top:8%;left:5%;">⭐</span>
+        <span class="deco-item deco-heart" style="top:15%;right:8%;">💖</span>
+        <span class="deco-item deco-music" style="top:70%;left:3%;">🎵</span>
+        <span class="deco-item deco-cloud" style="top:80%;right:5%;">☁️</span>
+        <span class="deco-item deco-sparkle" style="top:30%;left:12%;">✨</span>
+        <span class="deco-item deco-ribbon" style="top:60%;right:12%;">🎀</span>
+        <span class="deco-item deco-moon" style="top:45%;left:2%;">🌙</span>
+        <span class="deco-item deco-flower" style="top:25%;right:3%;">🌸</span>
+    </div>
+
+    <main class="container">
+        <header class="site-header">
+            <div class="header-icon">🔑</div>
+            <h1>Token Getter</h1>
+            <p class="subtitle">Making authentication a little cuter ~</p>
+        </header>
+
+        <section class="card main-card">
+            <!-- Mode selection -->
+            <div class="control-group mode-group">
+                <label class="control-label">Select platform</label>
+                <div class="mode-toggle" id="modeToggle">
+                    <button class="mode-btn active" data-mode="freebuff">
+                        <span class="btn-emoji">🌸</span>
+                        <span class="btn-text">Freebuff</span>
+                    </button>
+                    <button class="mode-btn" data-mode="codebuff">
+                        <span class="btn-emoji">💻</span>
+                        <span class="btn-text">Codebuff</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Start button -->
+            <button id="startBtn" class="action-btn primary-btn">
+                <span class="btn-glow"></span>
+                <span class="btn-content">
+                    <span class="btn-icon">✨</span>
+                    <span class="btn-text">Start auth</span>
+                </span>
+            </button>
+
+            <!-- Login area -->
+            <div id="loginArea" class="area login-area hidden">
+                <div class="area-icon">🌸</div>
+                <p class="area-title">Finish the login in your browser</p>
+                <a id="loginLink" href="#" target="_blank" class="login-link">
+                    <span>Go to login →</span>
+                </a>
+                <p class="area-hint">Come back after you click — I'll be waiting ~</p>
+            </div>
+
+            <!-- Status area -->
+            <div id="statusArea" class="area status-area hidden">
+                <div class="spinner-box">
+                    <div class="spinner">🌀</div>
+                </div>
+                <p id="statusText" class="status-text">Waiting for you to log in...</p>
+                <p id="statusSub" class="status-sub">Attempt 1</p>
+            </div>
+
+            <!-- Result area -->
+            <div id="resultArea" class="area result-area hidden">
+                <div class="result-badge">🎉</div>
+                <h2 class="result-title">Got your token!</h2>
+
+                <div class="user-card">
+                    <div class="user-avatar" id="userAvatar">🧸</div>
+                    <div class="user-details">
+                        <p class="user-name"><span class="label">Name</span><span id="userName" class="value">-</span></p>
+                        <p class="user-email"><span class="label">Email</span><span id="userEmail" class="value">-</span></p>
+                        <p class="user-id"><span class="label">Account</span><span id="userId" class="value">-</span></p>
+                        <p class="user-mode"><span class="label">Platform</span><span id="userMode" class="value">-</span></p>
+                    </div>
+                </div>
+
+                <div class="token-section">
+                    <label class="token-label">Your Token</label>
+                    <div class="token-input-group">
+                        <code id="tokenDisplay" class="token-display">***</code>
+                        <button id="copyBtn" class="icon-btn" title="Copy">
+                            <span>📋</span>
+                        </button>
+                    </div>
+                    <p id="copyTip" class="copy-tip hidden">Copied to clipboard ~</p>
+                </div>
+
+                <div class="result-actions">
+                    <button id="verifyBtn" class="action-btn secondary-btn">
+                        <span class="btn-icon">🔍</span>
+                        <span>Verify</span>
+                    </button>
+                    <button id="copyEnvBtn" class="action-btn primary-btn small">
+                        <span class="btn-icon">💾</span>
+                        <span>Copy env var</span>
+                    </button>
+                </div>
+                <p id="actionTip" class="action-tip"></p>
+            </div>
+        </section>
+
+        <footer class="site-footer">
+            <p>made with 💖 &nbsp;|&nbsp; ai-gateway-provider</p>
+        </footer>
+    </main>
+
+    <script>
+        const $ = id => document.getElementById(id);
+        const modeBtns = document.querySelectorAll('.mode-btn');
+        let currentMode = 'freebuff';
+        let eventSource = null;
+        let currentToken = '';
+
+        // Mode switching
+        modeBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                modeBtns.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentMode = btn.dataset.mode;
+            });
+        });
+
+        // Hide all areas
+        function hideAreas() {
+            $('loginArea').classList.add('hidden');
+            $('statusArea').classList.add('hidden');
+            $('resultArea').classList.add('hidden');
+        }
+
+        // Start auth
+        $('startBtn').addEventListener('click', async () => {
+            hideAreas();
+            $('startBtn').disabled = true;
+            $('startBtn').classList.add('loading');
+            $('actionTip').textContent = '';
+            currentToken = '';
+
+            try {
+                const resp = await fetch('/api/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mode: currentMode })
+                });
+                const data = await resp.json();
+
+                $('loginLink').href = data.login_url;
+                $('loginArea').classList.remove('hidden');
+                $('statusArea').classList.remove('hidden');
+
+                // 打开链接
+                window.open(data.login_url, '_blank');
+
+                // SSE 轮询
+                startPolling(data.fingerprint_id);
+            } catch (e) {
+                alert('Error: ' + e.message);
+                $('startBtn').disabled = false;
+                $('startBtn').classList.remove('loading');
+            }
+        });
+
+        function startPolling(fid) {
+            if (eventSource) eventSource.close();
+            eventSource = new EventSource(`/api/poll/${fid}`);
+            let attempt = 0;
+
+            eventSource.onmessage = ev => {
+                const data = JSON.parse(ev.data);
+
+                if (data.event === 'pending') {
+                    attempt = data.attempt;
+                    $('statusText').textContent = 'Waiting for you to log in...';
+                    $('statusSub').textContent = `Attempt ${attempt}`;
+                } else if (data.event === 'success') {
+                    eventSource.close();
+                    showResult(data.user, currentMode);
+                } else if (data.event === 'timeout') {
+                    eventSource.close();
+                    $('statusText').textContent = 'Timed out QAQ';
+                    $('statusSub').textContent = 'Please start auth again';
+                    $('startBtn').disabled = false;
+                    $('startBtn').classList.remove('loading');
+                } else if (data.event === 'error') {
+                    eventSource.close();
+                    $('statusText').textContent = 'Error: ' + (data.message || 'unknown error');
+                    $('statusSub').textContent = 'Please try again';
+                    $('startBtn').disabled = false;
+                    $('startBtn').classList.remove('loading');
+                }
+            };
+
+            eventSource.onerror = () => {
+                eventSource.close();
+            };
+        }
+
+        function showResult(user, mode) {
+            hideAreas();
+            $('startBtn').disabled = false;
+            $('startBtn').classList.remove('loading');
+            $('resultArea').classList.remove('hidden');
+
+            currentToken = user.authToken || '';
+            $('userName').textContent = user.name || 'Anonymous';
+            $('userEmail').textContent = user.email || 'n/a';
+            $('userId').textContent = user.id || user.userId || user.sub || 'n/a';
+            $('userMode').textContent = mode === 'codebuff' ? 'Codebuff' : 'Freebuff';
+            $('tokenDisplay').textContent = currentToken || 'No token returned';
+
+            // Pick an avatar based on the name
+            const avatars = ['🧸', '🐱', '🐰', '🦊', '🐼', '🐨', '🐯', '🐹'];
+            const idx = (user.name || '').length % avatars.length;
+            $('userAvatar').textContent = avatars[idx];
+        }
+
+        // Copy token
+        $('copyBtn').addEventListener('click', async () => {
+            try {
+                await navigator.clipboard.writeText(currentToken);
+                $('copyTip').classList.remove('hidden');
+                setTimeout(() => $('copyTip').classList.add('hidden'), 2000);
+            } catch {
+                // fallback
+                const ta = document.createElement('textarea');
+                ta.value = currentToken;
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+                $('copyTip').classList.remove('hidden');
+                setTimeout(() => $('copyTip').classList.add('hidden'), 2000);
+            }
+        });
+
+        // Verify token
+        $('verifyBtn').addEventListener('click', async () => {
+            $('verifyBtn').disabled = true;
+            try {
+                const resp = await fetch('/api/verify', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token: currentToken })
+                });
+                const data = await resp.json();
+                $('actionTip').textContent = data.ok ? `Verified ~ ${data.info}` : `Verification failed: ${data.info}`;
+                $('actionTip').className = 'action-tip ' + (data.ok ? 'tip-ok' : 'tip-err');
+            } catch (e) {
+                $('actionTip').textContent = 'Verification request error: ' + e.message;
+                $('actionTip').className = 'action-tip tip-err';
+            }
+            $('verifyBtn').disabled = false;
+        });
+
+        // Copy env var text
+        $('copyEnvBtn').addEventListener('click', async () => {
+            const envLine = `FREEBUFF_TOKEN=${currentToken}`;
+            $('copyEnvBtn').disabled = true;
+            try {
+                await navigator.clipboard.writeText(envLine);
+                $('actionTip').textContent = 'Copied FREEBUFF_TOKEN';
+                $('actionTip').className = 'action-tip tip-ok';
+            } catch (e) {
+                $('actionTip').textContent = 'Copy error: ' + e.message;
+                $('actionTip').className = 'action-tip tip-err';
+            }
+            $('copyEnvBtn').disabled = false;
+        });
+    </script>
+</body>
+</html>

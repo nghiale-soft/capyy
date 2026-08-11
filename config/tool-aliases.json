@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "mappings": [
+    {"canonical": "read_file", "claude-code": {"tool": "Read", "arguments": {"path": "file_path"}}, "codex": {"tool": "read_file", "arguments": {"path": "path"}}, "cline": {"tool": "read_file", "arguments": {"path": "path"}}},
+    {"canonical": "write_file", "claude-code": {"tool": "Write", "arguments": {"path": "file_path", "content": "content"}}, "codex": {"tool": "write_file", "arguments": {"path": "path", "content": "content"}}, "cline": {"tool": "write_file", "arguments": {"path": "path", "content": "content"}}},
+    {"canonical": "edit_file", "claude-code": {"tool": "Edit", "arguments": {"path": "file_path", "old_string": "old_string", "new_string": "new_string", "replace_all": "replace_all"}}, "codex": {"tool": "edit_file", "arguments": {"path": "path", "old_string": "old_string", "new_string": "new_string"}}, "cline": {"tool": "edit_file", "arguments": {"path": "path", "old_string": "old_string", "new_string": "new_string"}}},
+    {"canonical": "bash", "claude-code": {"tool": "Bash", "arguments": {"command": "command", "description": "description"}}, "codex": {"tool": "Bash", "arguments": {"command": "command"}}, "cline": {"tool": "execute_command", "arguments": {"command": "command"}}}
+  ]
+}
