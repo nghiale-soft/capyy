@@ -19,7 +19,7 @@ services:
       dockerfile: Dockerfile
     image: ai-gateway-provider:latest
     container_name: ai-gateway-provider
-    # Reads .env if present (FREEBUFF_TOKEN, FREEBUFF_PORT, ...); optional.
+    # Optional local overrides only; provider configuration belongs to Dashboard.
     env_file:
       - path: .env
         required: false

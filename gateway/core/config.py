@@ -53,8 +53,7 @@ class Settings:
     # Cooldown seconds after an account hits 429: no new requests are assigned
     # to that account during this window (multi-account auto-switching)
     account_cooldown: float = 60.0
-    # File storing Freebuff tokens configured via the dashboard (gitignored).
-    # If the file exists and has tokens, it wins over the FREEBUFF_TOKEN env.
+    # File storing account tokens configured through the dashboard (gitignored).
     tokens_file: str = "config/freebuff-tokens.json"
     # Per-project chat history (JSONL). "always" injects history context into
     # every request; "memory_only" injects only when the user asks about the
@@ -139,7 +138,7 @@ def load_settings() -> Settings:
     log_level = "DEBUG" if debug else os.getenv("FREEBUFF_LOG_LEVEL", "INFO")
     color_default = os.getenv("NO_COLOR") is None
     return Settings(
-        codebuff_token=os.getenv("FREEBUFF_TOKEN") or os.getenv("CODEBUFF_TOKEN"),
+        codebuff_token=None,
         local_api_key=os.getenv("FREEBUFF_API_KEY") or os.getenv("OPENAI_API_KEY"),
         codebuff_base_url=_api_base_url(),
         zeroclick_base_url=os.getenv("ZEROCLICK_BASE_URL", "https://zeroclick.dev"),

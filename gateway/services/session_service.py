@@ -34,7 +34,7 @@ def _normalize_tokens(value: Any) -> tuple[str, ...]:
 class SessionService:
     """Manages sessions and the account pool for the Freebuff provider.
 
-    Tokens may come from env (`FREEBUFF_TOKEN`) or from the config file
+    Tokens come from the dashboard-managed config file
     (`settings.tokens_file`, gitignored, written by the dashboard). The file
     wins over env; when updated via the dashboard, the pool is rebuilt right away.
     """
