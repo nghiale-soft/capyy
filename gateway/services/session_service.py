@@ -34,9 +34,9 @@ def _normalize_tokens(value: Any) -> tuple[str, ...]:
 class SessionService:
     """Manages sessions and the account pool for the Freebuff provider.
 
-    Tokens come from the dashboard-managed config file
-    (`settings.tokens_file`, gitignored, written by the dashboard). The file
-    wins over env; when updated via the dashboard, the pool is rebuilt right away.
+    Tokens come exclusively from the dashboard-managed config file
+    (`settings.tokens_file`, gitignored, written by the dashboard). When it
+    changes, the pool is rebuilt right away.
     """
 
     def __init__(self, settings: Settings) -> None:
@@ -62,13 +62,6 @@ class SessionService:
                 len(file_tokens),
             )
             return file_tokens
-        env_tokens = self.settings.codebuff_tokens
-        if env_tokens:
-            logger.info(
-                "freebuff tokens loaded source=env count=%s",
-                len(env_tokens),
-            )
-            return env_tokens
         return ()
 
     def _read_tokens_file(self) -> tuple[str, ...]:
@@ -117,8 +110,6 @@ class SessionService:
     def token_source(self) -> str:
         if self._read_tokens_file():
             return "file"
-        if self.settings.codebuff_token:
-            return "env"
         return "none"
 
     @property
@@ -129,14 +120,14 @@ class SessionService:
     async def update_tokens(self, tokens: list[str]) -> list[str]:
         """Write tokens to the file and reload the pool (called from API/dashboard).
 
-        An empty list deletes the config file and falls back to env, avoiding an
-        empty file contradicting the running pool. Returns the active list.
+        An empty list deletes the config file and clears the active pool.
+        Returns the active list.
         """
         normalized = _normalize_tokens(tokens)
         async with self._reload_lock:
             if not normalized:
                 await self._remove_tokens_file()
-                active = self.settings.codebuff_tokens
+                active = ()
             else:
                 self._active_index = min(self._active_index, len(normalized) - 1)
                 self._write_tokens_file(normalized)
@@ -148,7 +139,7 @@ class SessionService:
     async def remove_token(self, index: int) -> list[str]:
         """Remove one token by index; returns the remaining list.
 
-        If the file empties, falls back to env (if set).
+        If the file empties, the active pool becomes empty.
         """
         current = list(self._tokens)
         if index < 0 or index >= len(current):
@@ -161,18 +152,17 @@ class SessionService:
                 self._write_tokens_file(remaining)
             else:
                 await self._remove_tokens_file()
-                remaining = self.settings.codebuff_tokens
+                remaining = ()
             logger.info("freebuff token removed; remaining=%s", len(remaining))
             await self._swap_pool(remaining)
         return list(remaining)
 
     async def clear_tokens(self) -> None:
-        """Delete the config file, falling back to env (if set)."""
+        """Delete the dashboard token config file and clear the active pool."""
         async with self._reload_lock:
             await self._remove_tokens_file()
-            env_tokens = self.settings.codebuff_tokens
-            logger.info("freebuff tokens cleared; falling back to env count=%s", len(env_tokens))
-            await self._swap_pool(env_tokens)
+            logger.info("freebuff tokens cleared")
+            await self._swap_pool(())
 
     async def _remove_tokens_file(self) -> None:
         path = self.tokens_file

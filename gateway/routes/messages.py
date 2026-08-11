@@ -51,6 +51,15 @@ router = APIRouter()
 logger = logging.getLogger("gateway.routes.messages")
 
 
+def _contribution_reporter(request: Request) -> Any:
+    def report(kind: str, title: str, summary: str, metadata: dict[str, str]) -> None:
+        try:
+            request.app.state.contributions.add(kind, title, summary, metadata)
+        except Exception:
+            logger.exception("failed to persist contribution kind=%s", kind)
+    return report
+
+
 @router.post("/v1/messages")
 async def anthropic_messages(
     request: Request,
@@ -205,6 +214,7 @@ async def anthropic_messages(
         )
 
     has_tools = bool(body.get("tools"))
+    contribution_reporter = _contribution_reporter(request)
     logger.info(
         "anthropic route decision stream=%s tools=%s -> %s",
         body.get("stream") is True,
@@ -233,6 +243,7 @@ async def anthropic_messages(
                     ),
                     recover=recover_payload,
                     on_assistant=_on_assistant,
+                    on_contribution=contribution_reporter,
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -253,6 +264,7 @@ async def anthropic_messages(
                 debug=settings.debug,
                 log_body_chars=settings.log_body_chars,
                 client_tools=body.get("tools"),
+                on_contribution=contribution_reporter,
             )
         except CodebuffError as error:
             if lease is not None and error.status_code in {401, 403, 429}:
@@ -583,6 +595,7 @@ async def _stream_tool_loop_anthropic(
     on_rate_limited: Any | None = None,
     recover: Any | None = None,
     on_assistant: Any | None = None,
+    on_contribution: Any | None = None,
 ):
     """Run ONE native tool pass and stream Anthropic SSE to the client.
 
@@ -620,6 +633,7 @@ async def _stream_tool_loop_anthropic(
             debug=settings.debug,
             log_body_chars=settings.log_body_chars,
             client_tools=body.get("tools"),
+            on_contribution=on_contribution,
         )
     )
     logger.info("anthropic tool-pass phase=started model=%s", model)

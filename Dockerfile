@@ -1,10 +1,10 @@
 # syntax=docker/dockerfile:1
 
 # ==========================================================================
-# ai-gateway-provider — OpenAI/Anthropic-compatible API gateway
+# Capyy — OpenAI/Anthropic-compatible API gateway
 #
-#   Build:  docker build -t ai-gateway-provider .
-#   Run:    docker run --env-file .env -p 1221:1221 ai-gateway-provider
+#   Build:  docker build -t capyy .
+#   Run:    docker run --env-file .env -p 1221:1221 capyy
 # ==========================================================================
 
 # --------------------------------------------------------------------------
@@ -35,6 +35,11 @@ RUN /uv/bin/uv sync --frozen --no-dev
 # Stage 2: runtime — lean image; app is started with `uv run`
 # --------------------------------------------------------------------------
 FROM python:3.13-slim-bookworm AS runtime
+
+LABEL org.opencontainers.image.title="Capyy" \
+      org.opencontainers.image.description="A calm bridge between AI agents, local tools, MCP servers, and AI providers." \
+      org.opencontainers.image.source="https://github.com/nghiale-soft/capyy" \
+      org.opencontainers.image.url="https://github.com/nghiale-soft/capyy"
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -75,4 +80,4 @@ EXPOSE 1221 2222
 
 # `uv run` verifies the lockfile is in sync, then executes the console script
 # (main:main -> uvicorn). Env vars come from --env-file / -e at run time.
-CMD ["uv", "run", "ai-gateway"]
+CMD ["uv", "run", "capyy"]

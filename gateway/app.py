@@ -13,14 +13,14 @@ from router import Router
 
 from .core.config import load_settings
 from .core.logging import configure_logging
-from .routes import chat, freebuff, health, history, messages, models, providers, tools, tool_mappings
+from .routes import chat, contributions, freebuff, health, history, messages, models, providers, tools
 from .services.chat_history import ChatHistoryService
 from .services.history_scan import scan_local_history
 from .services.gateway_service import GatewayService
 from .services.provider_crud import ProviderCrudService
 from .services.session_service import SessionService
 from .services.tool_approval import ToolApprovalService
-from .services.tool_mapping_contributions import ToolMappingContributions
+from .services.contributions import Contributions
 from .compat.models import resolve_model
 
 
@@ -64,7 +64,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Tool approval (allow/ask/deny per tool; pending approvals via dashboard)
     tool_approval = ToolApprovalService(settings)
-    tool_mapping_contributions = ToolMappingContributions(settings.tool_mapping_contributions_file, settings.tool_mapping_issue_repository)
+    contributions_service = Contributions(settings.contributions_file, settings.contribution_issue_repository)
 
     # Build registry từ config đã lưu; freebuff qua factory
     def _freebuff_factory(cfg: Any):
@@ -113,7 +113,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.accounts = accounts
     app.state.chat_history = chat_history
     app.state.tool_approval = tool_approval
-    app.state.tool_mapping_contributions = tool_mapping_contributions
+    app.state.contributions = contributions_service
     app.state.model_resolver = resolve_model
     app.state.provider_crud = crud
     app.state.registry = registry
@@ -150,7 +150,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="ai-gateway-provider", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="capyy", version="0.1.0", lifespan=lifespan)
     app.include_router(health.router)
     app.include_router(models.router)
     app.include_router(chat.router)
@@ -159,7 +159,7 @@ def create_app() -> FastAPI:
     app.include_router(freebuff.router)
     app.include_router(history.router)
     app.include_router(tools.router)
-    app.include_router(tool_mappings.router)
+    app.include_router(contributions.router)
     return app
 
 

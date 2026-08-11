@@ -52,21 +52,21 @@ class SessionServiceTests(unittest.IsolatedAsyncioTestCase):
             tokens_file=self.tokens_file,
         )
 
-    async def test_env_tokens_used_when_no_file(self) -> None:
+    async def test_settings_token_is_ignored_when_no_dashboard_file(self) -> None:
         with patch(
             "gateway.services.session_service.CodebuffAccountPool",
             FakePool,
         ):
             service = SessionService(self._settings())
 
-        self.assertEqual(service.account_count, 2)
-        self.assertEqual(service.token_source, "env")
+        self.assertEqual(service.account_count, 1)
+        self.assertEqual(service.token_source, "none")
         self.assertEqual(
             FakePool.instances[0].settings.codebuff_token,
-            "env-a,env-b",
+            None,
         )
 
-    async def test_file_tokens_override_env(self) -> None:
+    async def test_file_tokens_are_the_only_source(self) -> None:
         Path(self.tokens_file).write_text(
             '{"version": 1, "tokens": ["file-a", "file-b", "file-c"]}',
             encoding="utf-8",
@@ -128,7 +128,7 @@ class SessionServiceTests(unittest.IsolatedAsyncioTestCase):
             "a,b",
         )
 
-    async def test_clear_tokens_removes_file_and_falls_back_to_env(self) -> None:
+    async def test_clear_tokens_removes_file_and_clears_pool(self) -> None:
         with patch(
             "gateway.services.session_service.CodebuffAccountPool",
             FakePool,
@@ -140,12 +140,12 @@ class SessionServiceTests(unittest.IsolatedAsyncioTestCase):
             await service.clear_tokens()
 
         self.assertFalse(Path(self.tokens_file).exists())
-        self.assertEqual(service.token_source, "env")
-        self.assertEqual(service.account_count, 2)
+        self.assertEqual(service.token_source, "none")
+        self.assertEqual(service.account_count, 1)
         self.assertTrue(FakePool.instances[1].closed)
         self.assertEqual(
             FakePool.instances[2].settings.codebuff_token,
-            "env-a,env-b",
+            None,
         )
 
     async def test_no_tokens_anywhere_builds_empty_pool(self) -> None:
@@ -159,7 +159,7 @@ class SessionServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.account_count, 1)
         self.assertEqual(service.token_source, "none")
 
-    async def test_update_tokens_with_empty_list_clears_file_and_uses_env(self) -> None:
+    async def test_update_tokens_with_empty_list_clears_file_and_pool(self) -> None:
         with patch(
             "gateway.services.session_service.CodebuffAccountPool",
             FakePool,
@@ -171,8 +171,8 @@ class SessionServiceTests(unittest.IsolatedAsyncioTestCase):
             await service.update_tokens([])
 
         self.assertFalse(Path(self.tokens_file).exists())
-        self.assertEqual(service.token_source, "env")
-        self.assertEqual(service.account_count, 2)
+        self.assertEqual(service.token_source, "none")
+        self.assertEqual(service.account_count, 1)
 
     async def test_tokens_property_returns_pool_order(self) -> None:
         with patch(
@@ -211,7 +211,7 @@ class SessionServiceTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(IndexError):
                 await service.remove_token(5)
 
-    async def test_remove_last_token_falls_back_to_env(self) -> None:
+    async def test_remove_last_token_clears_pool(self) -> None:
         with patch(
             "gateway.services.session_service.CodebuffAccountPool",
             FakePool,
@@ -220,8 +220,8 @@ class SessionServiceTests(unittest.IsolatedAsyncioTestCase):
             await service.update_tokens(["only-file"])
             remaining = await service.remove_token(0)
 
-        self.assertEqual(remaining, ["env-a", "env-b"])
-        self.assertEqual(service.token_source, "env")
+        self.assertEqual(remaining, [])
+        self.assertEqual(service.token_source, "none")
         self.assertFalse(Path(self.tokens_file).exists())
 
 

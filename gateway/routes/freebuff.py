@@ -140,7 +140,7 @@ async def clear_tokens(
     request: Request,
     _: None = Depends(check_local_auth),
 ) -> dict[str, Any]:
-    """Delete the token config file, falling back to FREEBUFF_TOKEN env (if set)."""
+    """Delete the dashboard-managed token config file and clear the pool."""
     accounts = request.app.state.accounts
     await accounts.clear_tokens()
     return {

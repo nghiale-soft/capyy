@@ -22,7 +22,8 @@
   `FREEBUFF_DASHBOARD_PORT` (default `0.0.0.0:2222`).
 - Provider configuration: `AI_GATEWAY_PROVIDERS_FILE`, default
   `config/providers.json`.
-- Persistent FreeBuff tokens: `FREEBUFF_TOKENS_FILE`, default
+- Persistent FreeBuff tokens: Dashboard-managed `config/freebuff-tokens.json`,
+  mounted through the Docker config volume.
   `config/freebuff-tokens.json`.
 - Chat history: `FREEBUFF_HISTORY_*`; tool behavior: `FREEBUFF_TOOL_*`.
 

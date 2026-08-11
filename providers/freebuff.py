@@ -105,7 +105,10 @@ class CodebuffClient:
         extra: dict[str, str] | None = None,
     ) -> dict[str, str]:
         if require_auth and not self.settings.codebuff_token:
-            raise CodebuffError("FREEBUFF_TOKEN or CODEBUFF_TOKEN is required", 500)
+            raise CodebuffError(
+                "No Freebuff token is configured. Add one in Dashboard → Freebuff Tokens.",
+                503,
+            )
 
         headers = {
             "Accept": "*/*",

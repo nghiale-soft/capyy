@@ -11,7 +11,7 @@
 
 | Item | Value |
 |---|---|
-| Project name | AI Gateway |
+| Project name | Capyy |
 | Documentation language | en (fallback: vi) |
 | Status | implemented gateway; some advanced roadmap items remain unverified |
 | Origin | Extension of a FreeBuff/Codebuff-compatible adapter |

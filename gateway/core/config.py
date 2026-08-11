@@ -79,8 +79,8 @@ class Settings:
     # dashboard; timeout seconds before the tool call is auto-denied.
     tool_approval_timeout: float = 120.0
     tool_permissions_file: str = "config/tool-permissions.json"
-    tool_mapping_contributions_file: str = "data/tool-mapping-contributions.json"
-    tool_mapping_issue_repository: str = "nghiale-soft/capyy"
+    contributions_file: str = "data/contributions.json"
+    contribution_issue_repository: str = "nghiale-soft/capyy"
 
     @property
     def codebuff_api_url(self) -> str:
@@ -165,7 +165,7 @@ def load_settings() -> Settings:
         retry_base_delay=float(os.getenv("FREEBUFF_RETRY_BASE_DELAY", "1.0")),
         retry_max_delay=float(os.getenv("FREEBUFF_RETRY_MAX_DELAY", "10.0")),
         account_cooldown=float(os.getenv("FREEBUFF_ACCOUNT_COOLDOWN", "60.0")),
-        tokens_file=os.getenv("FREEBUFF_TOKENS_FILE", "config/freebuff-tokens.json"),
+        tokens_file="config/freebuff-tokens.json",
         history_dir=os.getenv("FREEBUFF_HISTORY_DIR", "data/chat_history"),
         history_max_age_days=_int("FREEBUFF_HISTORY_MAX_AGE_DAYS", 365),
         history_inject_mode=os.getenv("FREEBUFF_HISTORY_INJECT_MODE", "memory_only"),
@@ -188,6 +188,6 @@ def load_settings() -> Settings:
         tool_permissions_file=os.getenv(
             "FREEBUFF_TOOL_PERMISSIONS_FILE", "config/tool-permissions.json"
         ),
-        tool_mapping_contributions_file=os.getenv("CAPYY_TOOL_MAPPING_CONTRIBUTIONS_FILE", "data/tool-mapping-contributions.json"),
-        tool_mapping_issue_repository=os.getenv("CAPYY_TOOL_MAPPING_ISSUE_REPOSITORY", "nghiale-soft/capyy"),
+        contributions_file=os.getenv("CAPYY_CONTRIBUTIONS_FILE", "data/contributions.json"),
+        contribution_issue_repository=os.getenv("CAPYY_CONTRIBUTION_ISSUE_REPOSITORY", "nghiale-soft/capyy"),
     )

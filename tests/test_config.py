@@ -5,6 +5,19 @@ from gateway.core.config import Settings, load_settings
 
 
 class ConfigTests(unittest.TestCase):
+    def test_load_settings_ignores_legacy_token_environment_variables(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "FREEBUFF_TOKEN": "must-not-be-read",
+                "CODEBUFF_TOKEN": "must-not-be-read-either",
+            },
+            clear=True,
+        ):
+            settings = load_settings()
+
+        self.assertIsNone(settings.codebuff_token)
+
     def test_proxy_url_is_ignored_when_proxy_is_disabled(self) -> None:
         settings = Settings(
             codebuff_token="token",

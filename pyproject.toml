@@ -1,5 +1,5 @@
 [project]
-name = "ai-gateway-provider"
+name = "capyy"
 version = "0.1.0"
 description = "Multi-provider AI API gateway (OpenAI/Anthropic-compatible)"
 readme = "README.md"
@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.scripts]
-ai-gateway = "main:main"
+capyy = "main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["gateway", "providers"]

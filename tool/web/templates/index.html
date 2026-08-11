@@ -3,7 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Token Getter ✨</title>
+    <title>Capyy — Token connect</title>
+    <link rel="icon" type="image/png" href="/static/favicon.png">
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -20,9 +21,9 @@
 
     <main class="container">
         <header class="site-header">
-            <div class="header-icon">🔑</div>
-            <h1>Token Getter</h1>
-            <p class="subtitle">Making authentication a little cuter ~</p>
+            <img class="header-icon" src="/static/capyy.png" alt="Capyy">
+            <h1>Capyy token connect</h1>
+            <p class="subtitle">Connect a provider account to your local Capyy gateway.</p>
         </header>
 
         <section class="card main-card">
@@ -102,7 +103,7 @@
                     </button>
                     <button id="copyEnvBtn" class="action-btn primary-btn small">
                         <span class="btn-icon">💾</span>
-                        <span>Copy env var</span>
+                        <span>Copy token</span>
                     </button>
                 </div>
                 <p id="actionTip" class="action-tip"></p>
@@ -110,7 +111,7 @@
         </section>
 
         <footer class="site-footer">
-            <p>made with 💖 &nbsp;|&nbsp; ai-gateway-provider</p>
+            <p>made with 💖 &nbsp;|&nbsp; Capyy</p>
         </footer>
     </main>
 
@@ -261,13 +262,12 @@
             $('verifyBtn').disabled = false;
         });
 
-        // Copy env var text
+        // Copy token for pasting into Dashboard → Freebuff Tokens.
         $('copyEnvBtn').addEventListener('click', async () => {
-            const envLine = `FREEBUFF_TOKEN=${currentToken}`;
             $('copyEnvBtn').disabled = true;
             try {
-                await navigator.clipboard.writeText(envLine);
-                $('actionTip').textContent = 'Copied FREEBUFF_TOKEN';
+                await navigator.clipboard.writeText(currentToken);
+                $('actionTip').textContent = 'Copied token — paste it in Dashboard → Freebuff Tokens';
                 $('actionTip').className = 'action-tip tip-ok';
             } catch (e) {
                 $('actionTip').textContent = 'Copy error: ' + e.message;

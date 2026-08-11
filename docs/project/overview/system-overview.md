@@ -1,4 +1,4 @@
-# System Overview — AI Gateway
+# System Overview — Capyy
 
 > System overview.
 
@@ -8,7 +8,7 @@
 
 ## Overview
 
-AI Gateway is a unified gateway layer for any AI provider. Clients configure
+Capyy is a unified gateway layer for AI agents and providers. Clients configure
 Base URL, API Key, and Model. The gateway routes to the right provider or falls back.
 
 ## High-level architecture

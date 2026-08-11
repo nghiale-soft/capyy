@@ -8,7 +8,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
-from pathlib import Path
 
 BASE_FREEBUFF = "https://freebuff.com"
 BASE_CODEBUFF = "https://www.codebuff.com"
@@ -105,23 +104,6 @@ def verify_token(token: str) -> tuple[bool, str]:
         return False, f"network error: {e}"
 
 
-def write_env(token: str) -> None:
-    env_path = Path(__file__).parent / ".env"
-    lines: list[str] = []
-    found = False
-    if env_path.exists():
-        for line in env_path.read_text(encoding="utf-8").splitlines():
-            if line.startswith("FREEBUFF_TOKEN="):
-                lines.append(f"FREEBUFF_TOKEN={token}")
-                found = True
-            else:
-                lines.append(line)
-    if not found:
-        lines.append(f"FREEBUFF_TOKEN={token}")
-    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"\n[ok] wrote FREEBUFF_TOKEN to {env_path}")
-
-
 def main() -> int:
     mode = "codebuff" if "--codebuff" in sys.argv else "freebuff"
     code_url, status_url = _endpoints(mode)
@@ -168,11 +150,8 @@ def main() -> int:
         print("         token did NOT authenticate against codebuff.com — do not use.")
         return 3
 
-    if "--write-env" in sys.argv:
-        write_env(token)
-    else:
-        print("\n(tip: rerun with --write-env to auto-update .env)")
-        print("(tip: use --codebuff to login codebuff.com)")
+    print("\n[tip] Copy this token into Dashboard → Freebuff Tokens.")
+    print("[tip] Use --codebuff to login codebuff.com.")
 
     return 0
 

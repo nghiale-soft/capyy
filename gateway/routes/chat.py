@@ -35,6 +35,15 @@ router = APIRouter()
 logger = logging.getLogger("gateway.routes.chat")
 
 
+def _contribution_reporter(request: Request) -> Any:
+    def report(kind: str, title: str, summary: str, metadata: dict[str, str]) -> None:
+        try:
+            request.app.state.contributions.add(kind, title, summary, metadata)
+        except Exception:
+            logger.exception("failed to persist contribution kind=%s", kind)
+    return report
+
+
 async def _safe_stream(agen: Any) -> Any:
     """Convert failover/upstream errors inside a stream into a valid SSE event."""
     from providers.openai_compatible import GatewayProviderError
@@ -188,6 +197,7 @@ async def _freebuff_chat(request: Request, body: dict[str, Any], settings: Any) 
         )
 
     has_tools = bool(body.get("tools"))
+    contribution_reporter = _contribution_reporter(request)
     logger.info(
         "openai route decision stream=%s tools=%s -> %s",
         body.get("stream") is True,
@@ -211,6 +221,7 @@ async def _freebuff_chat(request: Request, body: dict[str, Any], settings: Any) 
                     debug=settings.debug,
                     log_body_chars=settings.log_body_chars,
                     client_tools=body.get("tools"),
+                    on_contribution=contribution_reporter,
                     account_lease=lease,
                     on_assistant=_on_assistant,
                 ),
@@ -233,6 +244,7 @@ async def _freebuff_chat(request: Request, body: dict[str, Any], settings: Any) 
                 debug=settings.debug,
                 log_body_chars=settings.log_body_chars,
                 client_tools=body.get("tools"),
+                on_contribution=contribution_reporter,
             )
         except Exception as error:
             if (

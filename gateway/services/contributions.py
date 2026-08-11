@@ -1,4 +1,4 @@
-"""Privacy-safe, user-approved tool-mapping contributions."""
+"""Privacy-safe, user-approved community issue drafts."""
 from __future__ import annotations
 
 import json
@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Any
 
 
-class ToolMappingContributions:
+class Contributions:
+    """Persist only a deliberately small, non-sensitive diagnostic summary."""
+
     def __init__(self, path: str, repository: str) -> None:
         self.path = Path(path)
         self.repository = repository
@@ -29,12 +31,16 @@ class ToolMappingContributions:
     def list(self) -> list[dict[str, Any]]:
         return list(self._items)
 
-    def add(self, client: str, upstream_tool: str, client_tool: str, argument_mapping: dict[str, str]) -> dict[str, Any]:
-        # Deliberately accept names/keys only: never persist tool values, paths,
-        # commands, prompts, source, results or credentials.
-        item = {"id": uuid.uuid4().hex, "status": "pending", "created_at": int(time.time()),
-                "client": client, "upstream_tool": upstream_tool, "client_tool": client_tool,
-                "argument_mapping": argument_mapping}
+    def add(self, kind: str, title: str, summary: str, metadata: dict[str, str]) -> dict[str, Any]:
+        item = {
+            "id": uuid.uuid4().hex,
+            "status": "pending",
+            "created_at": int(time.time()),
+            "kind": kind,
+            "title": title,
+            "summary": summary,
+            "metadata": metadata,
+        }
         self._items.append(item)
         self._save()
         return item
@@ -43,12 +49,23 @@ class ToolMappingContributions:
         item = next((x for x in self._items if x.get("id") == contribution_id), None)
         if item is None or item.get("status") != "pending" or not self.repository:
             return None
-        body = "```json\n" + json.dumps({k: item[k] for k in ("client", "upstream_tool", "client_tool", "argument_mapping")}, ensure_ascii=False, indent=2) + "\n```\n\nNo prompts, paths, commands, tool values, source code, results, or credentials are included."
+        body = (
+            f"## {item['kind']}\n\n{item['summary']}\n\n"
+            "```json\n"
+            + json.dumps(item["metadata"], ensure_ascii=False, indent=2)
+            + "\n```\n\n"
+            "This report intentionally excludes prompts, source, paths, commands, tool output, tokens, and credentials."
+        )
         item["status"] = "approved"
         self._save()
-        return "https://github.com/" + self.repository + "/issues/new?" + urllib.parse.urlencode({"title": f"tool-mapping: {item['upstream_tool']} → {item['client_tool']}", "body": body, "labels": "tool-mapping"})
+        return "https://github.com/" + self.repository + "/issues/new?" + urllib.parse.urlencode(
+            {"title": f"{item['kind']}: {item['title']}", "body": body, "labels": "contribution"}
+        )
 
     def deny(self, contribution_id: str) -> bool:
         item = next((x for x in self._items if x.get("id") == contribution_id), None)
-        if item is None or item.get("status") != "pending": return False
-        item["status"] = "denied"; self._save(); return True
+        if item is None or item.get("status") != "pending":
+            return False
+        item["status"] = "denied"
+        self._save()
+        return True

@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Capyy — Dashboard</title>
-    <link rel="icon" type="image/svg+xml" href="/static/capyy.svg">
     <link rel="icon" type="image/png" href="/static/favicon.png">
     <link rel="stylesheet" href="/static/style.css">
     <link rel="stylesheet" href="/static/dashboard.css">
@@ -12,7 +11,7 @@
 <body>
     <header class="dash-header">
         <div class="dash-brand">
-            <img class="brand-icon" src="/static/capyy.svg" alt="Capyy">
+            <img class="brand-icon" src="/static/capyy-32.png" alt="Capyy">
             <span>Capyy</span>
         </div>
         <div class="dash-header-right">
@@ -43,7 +42,7 @@
             <div class="sidebar-label">Settings</div>
             <button class="menu-item nav-item" id="settingsNav">
                 <span class="menu-main">
-                    <span class="menu-name"><span class="ms-icon">settings</span>Settings <span id="settingsContributionBadge" class="pending-badge hidden" aria-label="Pending tool mapping contributions">0</span></span>
+                    <span class="menu-name"><span class="ms-icon">settings</span>Settings <span id="settingsContributionBadge" class="pending-badge hidden" aria-label="Pending community contributions">0</span></span>
                     <span class="menu-sub">gateway status</span>
                 </span>
             </button>
@@ -239,9 +238,9 @@
                     </div>
                 </div>
                 <div class="main-card" style="margin-top:16px;">
-                    <h3 style="margin-bottom:6px;">Tool mapping contributions <span id="contributionTitleBadge" class="pending-badge hidden">0 pending</span></h3>
-                    <p class="history-sub">A repair found a tool-name or argument-name mismatch. Review the metadata below. Approving only opens a prefilled GitHub Issue; nothing leaves this machine until you submit it on GitHub.</p>
-                    <div id="toolMappingContributions" class="history-empty">Loading…</div>
+                    <h3 style="margin-bottom:6px;">Community contributions <span id="contributionTitleBadge" class="pending-badge hidden">0 pending</span></h3>
+                    <p class="history-sub">Review safe diagnostic drafts for any Capyy bug. Approving only opens a prefilled GitHub Issue; nothing leaves this machine until you submit it on GitHub.</p>
+                    <div id="contributions" class="history-empty">Loading…</div>
                 </div>
 
             </section>
@@ -249,7 +248,7 @@
             <!-- About view -->
             <section id="aboutSection" class="hidden">
                 <div class="main-card">
-                    <h2 style="margin-bottom:8px;"><img class="inline-brand-icon" src="/static/capyy.svg" alt=""> About Capyy</h2>
+                    <h2 style="margin-bottom:8px;"><img class="inline-brand-icon" src="/static/capyy-32.png" alt=""> About Capyy</h2>
                     <p class="history-sub" style="margin-bottom:18px;">A calm bridge between AI agents, local tools, MCP servers, and AI providers.</p>
                     <div class="about-grid">
                         <div class="about-item">
@@ -872,24 +871,24 @@
                 $('settingsTokenSource').textContent = (tok && tok.source) || '—';
             } catch (e) { /* keep defaults */ }
             $('settingsProviders').textContent = providers.length ? `${providers.length} configured` : '—';
-            loadToolMappingContributions();
+            loadContributions();
         }
 
-        async function loadToolMappingContributions() {
-            const wrap = $('toolMappingContributions');
+        async function loadContributions() {
+            const wrap = $('contributions');
             try {
-                const resp = await fetch('/api/tool-mappings/contributions');
+                const resp = await fetch('/api/contributions');
                 const data = await resp.json();
                 const rows = (data.contributions || []).filter(x => x.status === 'pending');
                 const menuBadge = $('settingsContributionBadge'); const titleBadge = $('contributionTitleBadge');
                 menuBadge.classList.toggle('hidden', !rows.length); titleBadge.classList.toggle('hidden', !rows.length);
                 menuBadge.textContent = rows.length; titleBadge.textContent = `${rows.length} pending`;
                 $('settingsNav').classList.toggle('has-pending', !!rows.length);
-                if (!rows.length) { wrap.textContent = 'No pending mappings. Repairs can propose a metadata-only contribution here.'; return; }
-                wrap.innerHTML = rows.map(x => `<div class="mapping-contribution"><div><strong class="mono">${esc(x.upstream_tool)} → ${esc(x.client_tool)}</strong><p><b>Client:</b> ${esc(x.client)}. <b>Argument names:</b> ${esc(JSON.stringify(x.argument_mapping || {}))}</p><p>Reason: compiler repair produced a valid client tool call after a naming/shape mismatch. This Issue contains only the names above — never paths, commands, prompts, source, tool results, or credentials.</p></div><div><button class="btn btn-primary mapping-approve" data-id="${esc(x.id)}">Approve & open Issue</button> <button class="btn btn-secondary mapping-deny" data-id="${esc(x.id)}">Deny</button></div></div>`).join('');
-                wrap.querySelectorAll('.mapping-approve').forEach(btn => btn.addEventListener('click', async () => { const r = await fetch(`/api/tool-mappings/contributions/${btn.dataset.id}/approve`, {method:'POST'}); const d = await r.json(); if (!r.ok) return alert(d.detail || 'Could not approve'); window.open(d.issue_url, '_blank', 'noopener'); loadToolMappingContributions(); }));
-                wrap.querySelectorAll('.mapping-deny').forEach(btn => btn.addEventListener('click', async () => { await fetch(`/api/tool-mappings/contributions/${btn.dataset.id}/deny`, {method:'POST'}); loadToolMappingContributions(); }));
-            } catch (_) { wrap.textContent = 'Could not load tool mapping contributions.'; }
+                if (!rows.length) { wrap.textContent = 'No pending contributions. Capyy can prepare a safe draft when it identifies a repairable bug.'; return; }
+                wrap.innerHTML = rows.map(x => `<div class="mapping-contribution"><div><strong>${esc(x.kind || 'other')}: ${esc(x.title)}</strong><p>${esc(x.summary)}</p><p><b>Safe metadata:</b> <span class="mono">${esc(JSON.stringify(x.metadata || {}))}</span></p><p>This Issue never includes prompts, source, paths, commands, tool output, tokens, or credentials.</p></div><div><button class="btn btn-primary contribution-approve" data-id="${esc(x.id)}">Approve & open Issue</button> <button class="btn btn-secondary contribution-deny" data-id="${esc(x.id)}">Deny</button></div></div>`).join('');
+                wrap.querySelectorAll('.contribution-approve').forEach(btn => btn.addEventListener('click', async () => { const r = await fetch(`/api/contributions/${btn.dataset.id}/approve`, {method:'POST'}); const d = await r.json(); if (!r.ok) return alert(d.detail || 'Could not approve'); window.open(d.issue_url, '_blank', 'noopener'); loadContributions(); }));
+                wrap.querySelectorAll('.contribution-deny').forEach(btn => btn.addEventListener('click', async () => { await fetch(`/api/contributions/${btn.dataset.id}/deny`, {method:'POST'}); loadContributions(); }));
+            } catch (_) { wrap.textContent = 'Could not load community contributions.'; }
         }
 
         /* ---------- Figma tokens (Settings, pool) ---------- */

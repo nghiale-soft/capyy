@@ -9,4 +9,4 @@ ad_providers:
   - gravity
   - zeroclick
 enabled: true
-# token lấy từ env FREEBUFF_TOKEN (hoặc ghi đè ở đây nếu cần)
+# Token is managed in Dashboard → Freebuff Tokens, never in .env.

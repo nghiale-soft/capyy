@@ -53,6 +53,36 @@ class _FakeLease:
 
 
 class NativeToolStreamTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unclassified_tool_response_creates_safe_contribution(self) -> None:
+        class InvalidCompilerClient(_ToolPassClient):
+            async def chat_events(self, payload):
+                self.attempts += 1
+                yield _chunk("not a compiler protocol")
+                yield "data: [DONE]"
+
+        captured: list[tuple] = []
+        client = InvalidCompilerClient()
+        settings = Settings(codebuff_token="token", local_api_key=None)
+        async for _ in _stream_tool_loop_anthropic(
+            client,
+            {"model": "deepseek/deepseek-v4-flash", "messages": [{"role": "user", "content": "secret /Users/me/token.txt"}]},
+            body={"model": "deepseek/deepseek-v4-flash", "stream": True, "tools": [
+                {"name": "Read", "input_schema": {"type": "object"}}
+            ]},
+            settings=settings,
+            model="deepseek/deepseek-v4-flash",
+            requested_model="deepseek/deepseek-v4-flash",
+            on_contribution=lambda *args: captured.append(args),
+        ):
+            pass
+
+        self.assertEqual(len(captured), 1)
+        kind, title, summary, metadata = captured[0]
+        self.assertEqual((kind, title), ("tool-protocol", "Unclassified upstream tool response"))
+        self.assertEqual(metadata, {"error_code": "unclassified_tool_response", "declared_tool_count": "1"})
+        self.assertNotIn("/Users", repr(captured))
+        self.assertNotIn("secret", repr(captured))
+
     async def test_compiles_vietnamese_plan_to_native_tool_call_privately(self) -> None:
         class PlanThenToolClient(_ToolPassClient):
             payloads = []

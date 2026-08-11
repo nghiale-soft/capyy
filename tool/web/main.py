@@ -23,7 +23,7 @@ VERIFY_URL = "https://www.codebuff.com/api/v1/freebuff/session"
 SUPPORTED_MODES = {"freebuff", "codebuff"}
 NO_STORE_HEADERS = {"Cache-Control": "no-store"}
 
-app = FastAPI(title="Freebuff Token Web")
+app = FastAPI(title="Capyy Token Connect")
 web_dir = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=web_dir / "static"), name="static")
 

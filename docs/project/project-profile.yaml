@@ -1,5 +1,5 @@
 project:
-  name: AI Gateway
+  name: Capyy
   type: gateway / proxy / api-adapter
   languages:
     - python
@@ -30,7 +30,7 @@ roles:
 build:
   commands:
     - "uv sync"
-    - "uv run ai-gateway"
+    - "uv run capyy"
     - "docker compose up -d --build"
 
 verification:

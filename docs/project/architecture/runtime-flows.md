@@ -1,4 +1,4 @@
-# Runtime Flows — AI Gateway
+# Runtime Flows — Capyy
 
 - owner: SA
 - status: source-reviewed implementation

@@ -11,7 +11,7 @@ logger = logging.getLogger("ai-gateway.main")
 
 # Ensure the project root is on sys.path: `gateway/app.py` imports top-level
 # modules like `registry`/`router`; when run via the console script
-# (`uv run ai-gateway`) or in Docker, CWD is not automatically added.
+# (`uv run capyy`) or in Docker, CWD is not automatically added.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 

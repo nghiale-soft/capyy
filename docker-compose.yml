@@ -1,7 +1,7 @@
-name: ai-gateway-provider
+name: capyy
 
 # ==========================================================================
-# ai-gateway-provider — run with `docker compose up -d --build`
+# Capyy — run with `docker compose up -d --build`
 #
 # Volumes are declared here, so no manual `-v` mounting is needed:
 #   - gateway-config -> /app/config   (freebuff-tokens.json, providers.json)
@@ -13,16 +13,12 @@ name: ai-gateway-provider
 # ==========================================================================
 
 services:
-  ai-gateway:
+  capyy:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ai-gateway-provider:latest
-    container_name: ai-gateway-provider
-    # Optional local overrides only; provider configuration belongs to Dashboard.
-    env_file:
-      - path: .env
-        required: false
+    image: capyy:latest
+    container_name: capyy
     ports:
       - "1221:1221" # API (OpenAI/Anthropic-compatible)
       - "2222:2222" # Dashboard web

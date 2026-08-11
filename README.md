@@ -1,10 +1,12 @@
 # Capyy
 
+<img src="tool/web/static/capyy.png" alt="Capyy" width="120">
+
 > A calm bridge between AI agents, local tools, MCP servers, and AI providers.
 
 ## Goal
 
-AI Gateway is a unified gateway layer for any AI provider. Clients only need
+Capyy is a unified gateway layer for AI agents and providers. Clients only need
 to configure a Base URL, API Key, and Model. The gateway decides how to route
 to the right provider, with fallback when needed.
 
@@ -32,6 +34,15 @@ to the right provider, with fallback when needed.
 
 The API listens on port `1221` by default. The management dashboard is served
 separately on port `2222`; see [Dashboard web](#dashboard-web-separate-port).
+
+## Community contributions
+
+When Capyy identifies a repairable problem, Dashboard → Settings can show a
+privacy-safe issue draft. It can describe a tool protocol, provider, history,
+or dashboard problem using only bounded diagnostic metadata. Nothing is sent
+until the user chooses **Approve & open Issue**, then submits the prefilled
+GitHub Issue themselves. Prompts, source, file paths, commands, tool output,
+tokens, and credentials are never included.
 
 ## Architecture
 
@@ -91,9 +102,8 @@ Currently only an abstraction; not yet AI-integrated.
 
 ## Freebuff configuration (reduce daily-quota 429s)
 
-- **Multiple accounts:** `FREEBUFF_TOKEN=token-a,token-b,token-c` (comma
-  separated). The gateway builds an account pool, distributes round-robin, and
-  when an account gets a 429 from upstream
+- **Multiple accounts:** add each account in **Dashboard → Freebuff Tokens**.
+  The gateway builds an account pool and when an account gets a 429 from upstream
   (`free-models-per-day-high-balance`) it automatically **cooldowns** that
   account and switches to another one.
 - `FREEBUFF_MAX_TOKENS=8192` — cap `max_tokens` within the daily quota (Claude
@@ -114,17 +124,15 @@ Currently only an abstraction; not yet AI-integrated.
   at a time** or delete any account. Tokens are written to
   `config/freebuff-tokens.json` (gitignored) and the account pool reloads
   immediately.
-- **Priority:** the `freebuff-tokens.json` file wins over the
-  `FREEBUFF_TOKEN` env. To fall back to env, delete the file (or
-  `DELETE /api/freebuff/tokens`).
+- **Storage:** `freebuff-tokens.json` is the only token source. It is
+  gitignored and is retained in the Docker config volume.
 - API: `GET /api/freebuff/tokens` (status + masked tokens),
   `POST /api/freebuff/tokens` `{"token": "..."}` (add one),
   `PUT /api/freebuff/tokens` `{"tokens": ["a","b"]}` (replace),
   `DELETE /api/freebuff/tokens/{index}` (remove one),
-  `DELETE /api/freebuff/tokens` (clear, fall back to env).
-- `FREEBUFF_TOKENS_FILE=config/freebuff-tokens.json` — override the file path
-  if needed. In Docker use `docker compose up -d` — volumes are auto-mounted
-  (see *Docker Compose* below), tokens survive recreate.
+  `DELETE /api/freebuff/tokens` (clear all Dashboard tokens).
+- In Docker use `docker compose up -d` — volumes are auto-mounted (see
+  *Docker Compose* below), so tokens survive recreate.
 - ⚠️ When tokens change mid-flight, the account pool is rebuilt immediately —
   requests/streams running on an old account may be interrupted (the trade-off
   of hot reload). Best done during low traffic.
@@ -237,8 +245,8 @@ Volumes are declared in `docker-compose.yml`, **no manual `-v` mounting**:
   the image so the gateway can write immediately — no permission errors.
 - Data lives in named volumes and survives recreate/upgrade. Full reset:
   `docker compose down -v`.
-- Configure via `.env` (`FREEBUFF_TOKEN=...`); if `.env` is missing, compose
-  still runs (add tokens later through the dashboard).
+- Add provider tokens only through the Dashboard; `.env` is not used for
+  Freebuff authentication.
 - `~/.claude` and `~/.codex` are mounted **read-only** so the dashboard scan
   feature can read your local AI history inside the container.
 

@@ -649,6 +649,7 @@ async def run_tool_loop_pass(
     debug: bool = False,
     log_body_chars: int = 2000,
     client_tools: Any | None = None,
+    on_contribution: Any | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Run ONE upstream pass with the text-protocol tool prompt.
 
@@ -918,6 +919,13 @@ async def run_tool_loop_pass(
                 "Gateway tool-protocol error: the upstream response could not be "
                 "classified as a declared tool call or final answer. Please retry."
             )
+            if on_contribution is not None:
+                on_contribution(
+                    "tool-protocol",
+                    "Unclassified upstream tool response",
+                    "The compiler and its repair pass could not produce a declared tool call or final answer.",
+                    {"error_code": "unclassified_tool_response", "declared_tool_count": str(len(client_tool_names))},
+                )
             response["choices"][0]["finish_reason"] = "stop"
             return response, None
 
@@ -955,6 +963,13 @@ async def run_tool_loop_pass(
             response["choices"][0]["message"]["content"] = (
                 "Gateway rejected an invalid tool request: " + reason
             )
+            if on_contribution is not None:
+                on_contribution(
+                    "tool-protocol",
+                    "Invalid declared tool request",
+                    "The upstream emitted a tool call that did not match the client-declared schema.",
+                    {"error_code": "invalid_declared_tool", "declared_tool_count": str(len(client_tool_names))},
+                )
             response["choices"][0]["message"].pop("tool_calls", None)
             response["choices"][0]["finish_reason"] = "stop"
             return response, None
@@ -1183,6 +1198,7 @@ async def stream_tool_agent_loop(
     account_lease: Any | None = None,
     on_assistant: Any | None = None,
     client_tools: Any | None = None,
+    on_contribution: Any | None = None,
 ) -> AsyncIterator[bytes]:
     """Run ONE native tool pass and stream OpenAI SSE to the client.
 
@@ -1202,6 +1218,7 @@ async def stream_tool_agent_loop(
             debug=debug,
             log_body_chars=log_body_chars,
             client_tools=client_tools,
+            on_contribution=on_contribution,
         )
     )
     try:
