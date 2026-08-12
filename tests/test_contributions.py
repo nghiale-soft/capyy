@@ -2,6 +2,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from gateway.core.config import Settings
+from gateway.routes.contributions import router
 from gateway.services.contributions import Contributions
 
 
@@ -27,6 +32,34 @@ class ContributionsTests(unittest.TestCase):
             reports = Contributions(str(Path(directory) / "reports.json"), "org/capyy")
             item = reports.add("tool-protocol", "title", "summary", {"declared_tools": "x" * 1000})
             self.assertEqual(len(item["metadata"]["declared_tools"]), 280)
+
+    def test_approve_is_idempotent_and_keeps_the_same_issue_url(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            reports = Contributions(str(Path(directory) / "reports.json"), "org/capyy")
+            item = reports.add("provider", "No fallback", "summary", {"status_code": "429"})
+            first = reports.issue_url(item["id"])
+            second = reports.issue_url(item["id"])
+
+            self.assertEqual(first, second)
+            self.assertIn("github.com/org/capyy/issues/new", first)
+            self.assertEqual(reports.list()[0]["status"], "approved")
+
+    def test_approve_endpoint_is_not_404_after_a_client_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            app = FastAPI()
+            app.include_router(router)
+            app.state.settings = Settings(codebuff_token="", local_api_key=None)
+            reports = Contributions(str(Path(directory) / "reports.json"), "org/capyy")
+            item = reports.add("provider", "No fallback", "summary", {"status_code": "429"})
+            app.state.contributions = reports
+
+            with TestClient(app) as client:
+                first = client.post(f"/api/contributions/{item['id']}/approve")
+                retry = client.post(f"/api/contributions/{item['id']}/approve")
+
+            self.assertEqual(first.status_code, 200)
+            self.assertEqual(retry.status_code, 200)
+            self.assertEqual(first.json()["issue_url"], retry.json()["issue_url"])
 
 
 if __name__ == "__main__":

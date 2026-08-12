@@ -75,7 +75,13 @@ class Contributions:
 
     def issue_url(self, contribution_id: str) -> str | None:
         item = next((x for x in self._items if x.get("id") == contribution_id), None)
-        if item is None or item.get("status") != "pending" or not self.repository:
+        if item is None or not self.repository:
+            return None
+        # Approve is idempotent. A double-click, browser retry, or a delayed
+        # dashboard response must not turn a successful approval into a 404.
+        if item.get("status") == "approved":
+            return item.get("issue_url")
+        if item.get("status") != "pending":
             return None
         body = (
             f"## {item['kind']}\n\n{item['summary']}\n\n"
@@ -86,10 +92,11 @@ class Contributions:
             "This report intentionally excludes prompts, source, paths, commands, tool output, tokens, and credentials."
         )
         item["status"] = "approved"
-        self._save()
-        return "https://github.com/" + self.repository + "/issues/new?" + urllib.parse.urlencode(
+        item["issue_url"] = "https://github.com/" + self.repository + "/issues/new?" + urllib.parse.urlencode(
             {"title": f"{item['kind']}: {item['title']}", "body": body, "labels": "contribution"}
         )
+        self._save()
+        return item["issue_url"]
 
     def deny(self, contribution_id: str) -> bool:
         item = next((x for x in self._items if x.get("id") == contribution_id), None)

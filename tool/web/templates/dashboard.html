@@ -886,8 +886,36 @@
                 $('settingsNav').classList.toggle('has-pending', !!rows.length);
                 if (!rows.length) { wrap.textContent = 'No pending contributions. Capyy can prepare a safe draft when it identifies a repairable bug.'; return; }
                 wrap.innerHTML = rows.map(x => `<article class="mapping-contribution"><div class="contribution-main"><div class="contribution-head"><span class="contribution-kind">${esc(x.kind || 'other')}</span><span class="contribution-title">${esc(x.title)}</span><time class="contribution-time">${x.created_at ? esc(relTime(x.created_at * 1000)) : ''}</time></div><p class="contribution-summary">${esc(x.summary)}</p><div class="contribution-meta"><b>Safe metadata</b><span class="mono">${esc(JSON.stringify(x.metadata || {}))}</span></div><p class="contribution-privacy">Excludes prompts, source, paths, commands, tool output, tokens, and credentials.</p></div><div class="contribution-actions"><button class="btn btn-primary contribution-approve" data-id="${esc(x.id)}">Approve & open Issue</button><button class="btn btn-secondary contribution-deny" data-id="${esc(x.id)}">Deny</button></div></article>`).join('');
-                wrap.querySelectorAll('.contribution-approve').forEach(btn => btn.addEventListener('click', async () => { const r = await fetch(`/api/contributions/${btn.dataset.id}/approve`, {method:'POST'}); const d = await r.json(); if (!r.ok) return alert(d.detail || 'Could not approve'); window.open(d.issue_url, '_blank', 'noopener'); loadContributions(); }));
-                wrap.querySelectorAll('.contribution-deny').forEach(btn => btn.addEventListener('click', async () => { await fetch(`/api/contributions/${btn.dataset.id}/deny`, {method:'POST'}); loadContributions(); }));
+                wrap.querySelectorAll('.contribution-approve').forEach(btn => btn.addEventListener('click', async () => {
+                    if (btn.disabled) return;
+                    const denyBtn = btn.parentElement.querySelector('.contribution-deny');
+                    const label = btn.textContent;
+                    btn.disabled = true; if (denyBtn) denyBtn.disabled = true; btn.textContent = 'Creating Issue…';
+                    try {
+                        const r = await fetch(`/api/contributions/${encodeURIComponent(btn.dataset.id)}/approve`, {method:'POST'});
+                        const d = await r.json().catch(() => ({}));
+                        if (!r.ok) throw new Error(d.detail || 'Could not approve');
+                        window.open(d.issue_url, '_blank', 'noopener');
+                        await loadContributions();
+                    } catch (error) {
+                        btn.disabled = false; if (denyBtn) denyBtn.disabled = false; btn.textContent = label;
+                        alert(error.message || 'Could not approve');
+                    }
+                }));
+                wrap.querySelectorAll('.contribution-deny').forEach(btn => btn.addEventListener('click', async () => {
+                    if (btn.disabled) return;
+                    const approveBtn = btn.parentElement.querySelector('.contribution-approve');
+                    btn.disabled = true; if (approveBtn) approveBtn.disabled = true; btn.textContent = 'Denying…';
+                    try {
+                        const r = await fetch(`/api/contributions/${encodeURIComponent(btn.dataset.id)}/deny`, {method:'POST'});
+                        const d = await r.json().catch(() => ({}));
+                        if (!r.ok) throw new Error(d.detail || 'Could not deny');
+                        await loadContributions();
+                    } catch (error) {
+                        btn.disabled = false; if (approveBtn) approveBtn.disabled = false; btn.textContent = 'Deny';
+                        alert(error.message || 'Could not deny');
+                    }
+                }));
             } catch (_) { wrap.textContent = 'Could not load community contributions.'; }
         }
 
