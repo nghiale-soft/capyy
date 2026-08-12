@@ -54,7 +54,12 @@ logger = logging.getLogger("gateway.routes.messages")
 def _contribution_reporter(request: Request) -> Any:
     def report(kind: str, title: str, summary: str, metadata: dict[str, str]) -> None:
         try:
-            request.app.state.contributions.add(kind, title, summary, metadata)
+            request.app.state.contributions.add(
+                kind,
+                title,
+                summary,
+                {**metadata, "client": detect_client(request), "route": "anthropic"},
+            )
         except Exception:
             logger.exception("failed to persist contribution kind=%s", kind)
     return report
@@ -167,6 +172,17 @@ async def anthropic_messages(
         # chain. GatewayService skips the failed FreeBuff adapter and tries the
         # next OpenAI-compatible provider.
         if error.status_code in {401, 403, 429}:
+            if not gateway.has_generic_fallback("freebuff"):
+                _contribution_reporter(request)(
+                    "provider",
+                    "No fallback provider after Freebuff failure",
+                    "Freebuff failed and no enabled lower-priority provider is configured.",
+                    {"provider": "freebuff", "status_code": str(error.status_code), "fallback_available": "false"},
+                )
+                return JSONResponse(
+                    status_code=error.status_code,
+                    content={"type": "error", "error": {"type": "api_error", "message": str(error)}},
+                )
             logger.warning(
                 "freebuff preparation failed status=%s; trying next provider",
                 error.status_code,

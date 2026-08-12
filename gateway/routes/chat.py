@@ -38,7 +38,12 @@ logger = logging.getLogger("gateway.routes.chat")
 def _contribution_reporter(request: Request) -> Any:
     def report(kind: str, title: str, summary: str, metadata: dict[str, str]) -> None:
         try:
-            request.app.state.contributions.add(kind, title, summary, metadata)
+            request.app.state.contributions.add(
+                kind,
+                title,
+                summary,
+                {**metadata, "client": detect_client(request), "route": "openai"},
+            )
         except Exception:
             logger.exception("failed to persist contribution kind=%s", kind)
     return report

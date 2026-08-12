@@ -127,6 +127,18 @@ class GatewayFailoverTests(unittest.TestCase):
         result = _run(gw.chat("freebuff", {"model": "x", "messages": []}))
         self.assertEqual(result["choices"][0]["message"]["content"], "from-a")
 
+    def test_reports_whether_freebuff_has_a_generic_fallback(self):
+        only_freebuff = self._make_gateway(
+            [("freebuff", _FreebuffProvider("freebuff"))], default="freebuff"
+        )
+        self.assertFalse(only_freebuff.has_generic_fallback("freebuff"))
+
+        with_generic = self._make_gateway(
+            [("freebuff", _FreebuffProvider("freebuff")), ("a", _Provider("a"))],
+            default="freebuff",
+        )
+        self.assertTrue(with_generic.has_generic_fallback("freebuff"))
+
     def test_failover_preserves_model_for_generic_target(self):
         calls = []
 

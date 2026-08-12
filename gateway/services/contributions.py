@@ -32,14 +32,42 @@ class Contributions:
         return list(self._items)
 
     def add(self, kind: str, title: str, summary: str, metadata: dict[str, str]) -> dict[str, Any]:
+        # The same protocol mismatch can occur on several retries. Keep one
+        # reviewable issue draft, but preserve how often it happened.
+        safe_metadata = {str(key): str(value)[:280] for key, value in metadata.items()}
+        fingerprint = json.dumps(
+            {"kind": kind, "title": title, "summary": summary, "metadata": safe_metadata},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        now = int(time.time())
+        for existing in self._items:
+            existing_fingerprint = json.dumps(
+                {
+                    "kind": existing.get("kind"),
+                    "title": existing.get("title"),
+                    "summary": existing.get("summary"),
+                    "metadata": existing.get("metadata", {}),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            if existing.get("status") == "pending" and existing_fingerprint == fingerprint:
+                existing["occurrences"] = int(existing.get("occurrences", 1)) + 1
+                existing["last_seen_at"] = now
+                self._save()
+                return existing
         item = {
             "id": uuid.uuid4().hex,
             "status": "pending",
-            "created_at": int(time.time()),
+            "created_at": now,
+            "occurrences": 1,
             "kind": kind,
             "title": title,
             "summary": summary,
-            "metadata": metadata,
+            "metadata": safe_metadata,
         }
         self._items.append(item)
         self._save()
@@ -51,6 +79,7 @@ class Contributions:
             return None
         body = (
             f"## {item['kind']}\n\n{item['summary']}\n\n"
+            f"Occurrences: {item.get('occurrences', 1)}\n\n"
             "```json\n"
             + json.dumps(item["metadata"], ensure_ascii=False, indent=2)
             + "\n```\n\n"

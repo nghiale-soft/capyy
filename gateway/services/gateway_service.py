@@ -82,6 +82,13 @@ class GatewayService:
         # Freebuff provider is not an OpenAICompatibleProvider (async .chat)
         return provider is not None and not hasattr(provider, "_chat_url")
 
+    def has_generic_fallback(self, provider_id: str) -> bool:
+        """Whether priority routing has a usable non-Freebuff next provider."""
+        return any(
+            pid != provider_id and self.registry.get(pid) is not None and not self.is_freebuff(pid)
+            for pid in self.registry.ordered_ids()
+        )
+
     async def chat(
         self,
         provider_id: str,

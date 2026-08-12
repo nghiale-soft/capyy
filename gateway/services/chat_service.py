@@ -752,15 +752,21 @@ async def run_tool_loop_pass(
 
         collected_text = "".join(text_parts)
         collected_reasoning = "".join(reasoning_parts)
-        # Deliberately raw and untruncated at the user's request. This is an
-        # operational diagnostic switch for this local gateway: Docker logs
-        # may contain model output, source excerpts and tool-related context.
-        logger.warning(
-            "tool pass phase=%s raw_response_text=<<<%s>>> raw_response_reasoning=<<<%s>>>",
+        # Never dump chat/source/tool output by default.  Lengths correlate a
+        # failure without leaking a user's project into Docker logs.
+        logger.info(
+            "tool pass phase=%s response_chars=%s reasoning_chars=%s",
             phase,
-            _redact_raw_model_output(collected_text),
-            _redact_raw_model_output(collected_reasoning),
+            len(collected_text),
+            len(collected_reasoning),
         )
+        if debug:
+            logger.debug(
+                "tool pass phase=%s response=%s reasoning=%s",
+                phase,
+                render_debug(_redact_raw_model_output(collected_text), log_body_chars),
+                render_debug(_redact_raw_model_output(collected_reasoning), log_body_chars),
+            )
         return accumulator, collected_text, collected_reasoning
 
     accumulator, full_text, full_reasoning = await _collect(messages, phase="main")
@@ -924,7 +930,12 @@ async def run_tool_loop_pass(
                     "tool-protocol",
                     "Unclassified upstream tool response",
                     "The compiler and its repair pass could not produce a declared tool call or final answer.",
-                    {"error_code": "unclassified_tool_response", "declared_tool_count": str(len(client_tool_names))},
+                    {
+                        "error_code": "unclassified_tool_response",
+                        "declared_tool_count": str(len(client_tool_names)),
+                        "declared_tools": _issue_tool_names(client_tool_names),
+                        "compiler_passes": "2",
+                    },
                 )
             response["choices"][0]["finish_reason"] = "stop"
             return response, None
@@ -968,7 +979,13 @@ async def run_tool_loop_pass(
                     "tool-protocol",
                     "Invalid declared tool request",
                     "The upstream emitted a tool call that did not match the client-declared schema.",
-                    {"error_code": "invalid_declared_tool", "declared_tool_count": str(len(client_tool_names))},
+                    {
+                        "error_code": "invalid_declared_tool",
+                        "emitted_tool": str(call.get("name") or "unknown")[:80],
+                        "validation": _tool_validation_code(reason),
+                        "argument_keys": _issue_argument_keys(call.get("arguments") or {}),
+                        "declared_tools": _issue_tool_names(client_tool_names),
+                    },
                 )
             response["choices"][0]["message"].pop("tool_calls", None)
             response["choices"][0]["finish_reason"] = "stop"
@@ -1010,6 +1027,27 @@ async def run_tool_loop_pass(
             render_debug(full_text, log_body_chars),
         )
     return accumulator.final_response(), None
+
+
+def _tool_validation_code(reason: str) -> str:
+    """Turn human validation text into a stable issue-safe diagnosis code."""
+    lowered = (reason or "").lower()
+    if "not declared" in lowered:
+        return "tool_not_declared"
+    if "missing required" in lowered or "empty required" in lowered:
+        return "required_argument_missing"
+    if "must be" in lowered or "invalid" in lowered:
+        return "argument_schema_invalid"
+    return "tool_schema_mismatch"
+
+
+def _issue_tool_names(names: list[str]) -> str:
+    """Useful schema context, capped so an issue stays safe and readable."""
+    return ",".join(str(name)[:80] for name in names[:16])[:240]
+
+
+def _issue_argument_keys(arguments: dict[str, Any]) -> str:
+    return ",".join(sorted(str(key)[:80] for key in arguments))[:240]
 
 
 async def run_tool_agent_loop(

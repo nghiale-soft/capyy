@@ -79,7 +79,15 @@ class NativeToolStreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(captured), 1)
         kind, title, summary, metadata = captured[0]
         self.assertEqual((kind, title), ("tool-protocol", "Unclassified upstream tool response"))
-        self.assertEqual(metadata, {"error_code": "unclassified_tool_response", "declared_tool_count": "1"})
+        self.assertEqual(
+            metadata,
+            {
+                "error_code": "unclassified_tool_response",
+                "declared_tool_count": "1",
+                "declared_tools": "Read",
+                "compiler_passes": "2",
+            },
+        )
         self.assertNotIn("/Users", repr(captured))
         self.assertNotIn("secret", repr(captured))
 
