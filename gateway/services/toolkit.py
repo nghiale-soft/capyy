@@ -720,10 +720,10 @@ def declared_client_tool_names(client_tools: Any) -> list[str]:
 def adapt_client_tool_call(call: dict[str, Any], client_tools: Any) -> dict[str, Any]:
     """Make a safe compatibility conversion only to a declared client tool.
 
-    Claude Code does not expose a native ``ListDir`` tool, although some models
-    emit that common gateway alias. When Bash is declared, ``ls`` is the exact
-    host-side equivalent. Shell-quote the path and leave every other call
-    untouched for normal schema validation.
+    Claude Code does not expose native ``ListDir``, ``Glob`` or ``Grep``
+    tools, although models commonly emit those gateway aliases. When Bash is
+    declared, translate to the exact shell equivalent. Shell-quote every model
+    supplied string and leave every other call untouched for schema validation.
     """
     names = declared_client_tool_names(client_tools)
     arguments = call.get("arguments")
@@ -750,6 +750,22 @@ def adapt_client_tool_call(call: dict[str, Any], client_tools: Any) -> dict[str,
             "arguments": {
                 "command": f"rg --files -g {shlex.quote(arguments['pattern'])}",
                 "description": "List files matching the requested glob pattern",
+            },
+        }
+    if (
+        call.get("name") == "Grep"
+        and "Grep" not in names
+        and "Bash" in names
+        and isinstance(arguments, dict)
+        and isinstance(arguments.get("pattern"), str)
+        and arguments["pattern"].strip()
+    ):
+        path = arguments.get("path") if isinstance(arguments.get("path"), str) else "."
+        return {
+            "name": "Bash",
+            "arguments": {
+                "command": f"rg -n -- {shlex.quote(arguments['pattern'])} {shlex.quote(path)}",
+                "description": "Search file contents for the requested pattern",
             },
         }
     return call

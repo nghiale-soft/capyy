@@ -194,6 +194,16 @@ class ClientToolCallTests(unittest.TestCase):
             call["arguments"]["command"], "rg --files -g '**/*.md; no-op'"
         )
 
+    def test_grep_is_safely_adapted_to_declared_bash(self) -> None:
+        call = adapt_client_tool_call(
+            {"name": "Grep", "arguments": {"pattern": "TODO; no-op", "path": "src folder"}},
+            [{"name": "Bash", "input_schema": {"type": "object"}}],
+        )
+        self.assertEqual(call["name"], "Bash")
+        self.assertEqual(
+            call["arguments"]["command"], "rg -n -- 'TODO; no-op' 'src folder'"
+        )
+
     def test_read_file_lines_preserves_range_for_native_read(self) -> None:
         call, _ = client_tool_call(
             '<<<TOOL_CALL>>>{"name":"read_file_lines","arguments":{"path":"a.py","start":10,"end":14}}<<<END_TOOL_CALL>>>'
