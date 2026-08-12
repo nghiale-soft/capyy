@@ -1,4 +1,7 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from gateway.deps import detect_client
 from gateway.services.chat_service import (
@@ -13,6 +16,7 @@ from gateway.services.toolkit import (
     parse_compiler_protocol,
     validate_client_tool_call,
     adapt_client_tool_call,
+    load_tool_aliases,
 )
 
 
@@ -54,6 +58,21 @@ class DetectClientTests(unittest.TestCase):
 
 
 class ClientToolCallTests(unittest.TestCase):
+    def test_json_aliases_override_runtime_claude_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tool-aliases.json"
+            path.write_text(
+                json.dumps({"version": 1, "mappings": [{
+                    "canonical": "read_file",
+                    "claude-code": {"tool": "OpenText", "arguments": {"path": "filename"}},
+                }]}),
+                encoding="utf-8",
+            )
+            parsed, reverse = load_tool_aliases(path)
+
+        self.assertEqual(parsed["OpenText"], ("read_file", {"filename": "path"}))
+        self.assertEqual(reverse["read_file"], ("OpenText", {"path": "filename"}))
+
     _BAR = "\uff5c"
 
     def test_json_protocol_maps_to_client_tool(self) -> None:

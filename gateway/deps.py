@@ -7,6 +7,21 @@ from fastapi import HTTPException, Request
 from .core.config import Settings
 
 
+def record_contribution(
+    request: Request,
+    kind: str,
+    title: str,
+    summary: str,
+    metadata: dict[str, str],
+) -> None:
+    """Best-effort local draft creation; never let telemetry affect a request."""
+    try:
+        request.app.state.contributions.add(kind, title, summary, metadata)
+    except Exception:
+        # Contributions are optional and must never mask the original error.
+        pass
+
+
 def get_settings(request: Request) -> Settings:
     return request.app.state.settings
 
@@ -73,12 +88,20 @@ def check_local_auth(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
 
-def error_response(error: Exception) -> Any:
+def error_response(error: Exception, request: Request | None = None) -> Any:
     from providers.freebuff import CodebuffError
     from providers.openai_compatible import GatewayProviderError
     from fastapi.responses import JSONResponse
 
     if isinstance(error, CodebuffError):
+        if request is not None:
+            record_contribution(
+                request,
+                "provider",
+                "Freebuff upstream request failed",
+                "Freebuff could not complete a request after its normal retry and failover handling.",
+                {"provider": "freebuff", "status_code": str(error.status_code)},
+            )
         return JSONResponse(
             status_code=error.status_code,
             content={
@@ -90,6 +113,14 @@ def error_response(error: Exception) -> Any:
             },
         )
     if isinstance(error, GatewayProviderError):
+        if request is not None:
+            record_contribution(
+                request,
+                "provider",
+                "Provider request failed",
+                "An OpenAI-compatible provider could not complete a request.",
+                {"status_code": str(error.status_code or 502)},
+            )
         return JSONResponse(
             status_code=error.status_code or 502,
             content={

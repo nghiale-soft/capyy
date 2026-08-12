@@ -23,6 +23,21 @@ class FinalizeFailingClient:
 
 
 class AppErrorTests(unittest.TestCase):
+    def test_provider_error_creates_metadata_only_contribution(self) -> None:
+        captured = []
+
+        class _Contributions:
+            def add(self, *args):
+                captured.append(args)
+
+        request = type("Request", (), {"app": type("App", (), {"state": type("State", (), {"contributions": _Contributions()})()})()})()
+        error_response(CodebuffError("secret upstream detail /Users/me", 429), request)
+
+        self.assertEqual(captured[0][0], "provider")
+        self.assertEqual(captured[0][3], {"provider": "freebuff", "status_code": "429"})
+        self.assertNotIn("secret", repr(captured))
+        self.assertNotIn("/Users", repr(captured))
+
     def test_codebuff_error_returns_openai_style_json_response(self) -> None:
         response = error_response(CodebuffError("network error", 502))
         body = json.loads(response.body)

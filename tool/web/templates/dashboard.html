@@ -240,7 +240,7 @@
                 <div class="main-card" style="margin-top:16px;">
                     <h3 style="margin-bottom:6px;">Community contributions <span id="contributionTitleBadge" class="pending-badge hidden">0 pending</span></h3>
                     <p class="history-sub">Review safe diagnostic drafts for any Capyy bug. Approving only opens a prefilled GitHub Issue; nothing leaves this machine until you submit it on GitHub.</p>
-                    <div id="contributions" class="history-empty">Loading…</div>
+                    <div id="contributions" class="contribution-list">Loading…</div>
                 </div>
 
             </section>
@@ -885,10 +885,17 @@
                 menuBadge.textContent = rows.length; titleBadge.textContent = `${rows.length} pending`;
                 $('settingsNav').classList.toggle('has-pending', !!rows.length);
                 if (!rows.length) { wrap.textContent = 'No pending contributions. Capyy can prepare a safe draft when it identifies a repairable bug.'; return; }
-                wrap.innerHTML = rows.map(x => `<div class="mapping-contribution"><div><strong>${esc(x.kind || 'other')}: ${esc(x.title)}</strong><p>${esc(x.summary)}</p><p><b>Safe metadata:</b> <span class="mono">${esc(JSON.stringify(x.metadata || {}))}</span></p><p>This Issue never includes prompts, source, paths, commands, tool output, tokens, or credentials.</p></div><div><button class="btn btn-primary contribution-approve" data-id="${esc(x.id)}">Approve & open Issue</button> <button class="btn btn-secondary contribution-deny" data-id="${esc(x.id)}">Deny</button></div></div>`).join('');
+                wrap.innerHTML = rows.map(x => `<article class="mapping-contribution"><div class="contribution-main"><div class="contribution-head"><span class="contribution-kind">${esc(x.kind || 'other')}</span><span class="contribution-title">${esc(x.title)}</span><time class="contribution-time">${x.created_at ? esc(relTime(x.created_at * 1000)) : ''}</time></div><p class="contribution-summary">${esc(x.summary)}</p><div class="contribution-meta"><b>Safe metadata</b><span class="mono">${esc(JSON.stringify(x.metadata || {}))}</span></div><p class="contribution-privacy">Excludes prompts, source, paths, commands, tool output, tokens, and credentials.</p></div><div class="contribution-actions"><button class="btn btn-primary contribution-approve" data-id="${esc(x.id)}">Approve & open Issue</button><button class="btn btn-secondary contribution-deny" data-id="${esc(x.id)}">Deny</button></div></article>`).join('');
                 wrap.querySelectorAll('.contribution-approve').forEach(btn => btn.addEventListener('click', async () => { const r = await fetch(`/api/contributions/${btn.dataset.id}/approve`, {method:'POST'}); const d = await r.json(); if (!r.ok) return alert(d.detail || 'Could not approve'); window.open(d.issue_url, '_blank', 'noopener'); loadContributions(); }));
                 wrap.querySelectorAll('.contribution-deny').forEach(btn => btn.addEventListener('click', async () => { await fetch(`/api/contributions/${btn.dataset.id}/deny`, {method:'POST'}); loadContributions(); }));
             } catch (_) { wrap.textContent = 'Could not load community contributions.'; }
+        }
+
+        const reportedDashboardIssues = new Set();
+        function reportDashboardIssue(code, title, summary) {
+            if (reportedDashboardIssues.has(code)) return;
+            reportedDashboardIssues.add(code);
+            fetch('/api/contributions', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({kind:'dashboard', title, summary, metadata:{error_code:code, route:location.hash || '#/'}}) }).catch(() => {});
         }
 
         /* ---------- Figma tokens (Settings, pool) ---------- */
@@ -1043,6 +1050,7 @@
                 renderToolPerms();
             } catch (e) {
                 $('toolPermsList').innerHTML = '<div class="history-loading">failed to load permissions</div>';
+                reportDashboardIssue('tool_permissions_load_failed', 'Dashboard could not load tool permissions', 'The Dashboard could not retrieve tool permission settings.');
             }
         }
 
@@ -1357,6 +1365,7 @@
                 wrap.querySelectorAll('[data-session]').forEach(btn => btn.addEventListener('click', () => openHistorySession(key, btn.dataset.session)));
             } catch (e) {
                 wrap.innerHTML = '<div class="history-loading">failed to load conversation</div>';
+                reportDashboardIssue('history_sessions_load_failed', 'Dashboard could not load conversation sessions', 'The Dashboard could not retrieve a project conversation list.');
             }
         }
 

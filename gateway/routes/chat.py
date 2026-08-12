@@ -116,7 +116,7 @@ async def chat_completions(
         response = await gateway.chat(provider_id, body, real_model=real_model)
         return JSONResponse(response)
     except Exception as error:
-        return error_response(error)
+        return error_response(error, request)
 
 
 async def _freebuff_chat(request: Request, body: dict[str, Any], settings: Any) -> Any:
@@ -174,7 +174,7 @@ async def _freebuff_chat(request: Request, body: dict[str, Any], settings: Any) 
             error,
             exc_info=settings.debug,
         )
-        return error_response(error)
+        return error_response(error, request)
 
     recover_payload = build_session_recover_callback(
         lease,
@@ -253,7 +253,7 @@ async def _freebuff_chat(request: Request, body: dict[str, Any], settings: Any) 
                 and error.status_code in {401, 403, 429}
             ):
                 lease.mark_rate_limited(settings.account_cooldown)
-            return error_response(error)
+            return error_response(error, request)
         finally:
             if lease is not None:
                 await lease.aclose()
@@ -331,7 +331,7 @@ async def _freebuff_chat(request: Request, body: dict[str, Any], settings: Any) 
             and error.status_code in {401, 403, 429}
         ):
             lease.mark_rate_limited(settings.account_cooldown)
-        return error_response(error)
+        return error_response(error, request)
     finally:
         if lease is not None:
             await lease.aclose()

@@ -180,6 +180,12 @@ async def anthropic_messages(
                 history_context=(project_key, messages, _meta, injected),
             )
         logger.warning("failed to prepare anthropic request: %s", error, exc_info=settings.debug)
+        _contribution_reporter(request)(
+            "provider",
+            "Freebuff request preparation failed",
+            "Freebuff could not prepare a request after its normal retry and failover handling.",
+            {"provider": "freebuff", "status_code": str(error.status_code)},
+        )
         return JSONResponse(
             status_code=error.status_code,
             content={
@@ -269,6 +275,11 @@ async def anthropic_messages(
         except CodebuffError as error:
             if lease is not None and error.status_code in {401, 403, 429}:
                 lease.mark_rate_limited(settings.account_cooldown)
+            contribution_reporter(
+                "provider", "Freebuff tool pass failed",
+                "Freebuff could not complete a native client tool pass.",
+                {"provider": "freebuff", "status_code": str(error.status_code)},
+            )
             return JSONResponse(
                 status_code=error.status_code,
                 content={
@@ -318,6 +329,7 @@ async def anthropic_messages(
                 ),
                 recover=recover_payload,
                 on_assistant=_on_assistant,
+                on_contribution=contribution_reporter,
             ),
             media_type="text/event-stream",
             headers={
@@ -360,6 +372,11 @@ async def anthropic_messages(
     except CodebuffError as error:
         if lease is not None and error.status_code in {401, 403, 429}:
             lease.mark_rate_limited(settings.account_cooldown)
+        contribution_reporter(
+            "provider", "Freebuff completion failed",
+            "Freebuff could not complete a non-streaming response.",
+            {"provider": "freebuff", "status_code": str(error.status_code)},
+        )
         return JSONResponse(
             status_code=error.status_code,
             content={

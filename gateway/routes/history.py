@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
-from ..deps import check_local_auth
+from ..deps import check_local_auth, record_contribution
 from ..services.chat_history import _sanitize_filename
 from ..services.history_scan import scan_local_history
 
@@ -41,8 +41,18 @@ async def scan_external_history(
     service = _history(request)
     # Parsing local JSONL sessions can take seconds for a long-lived workspace;
     # keep it off the async API loop so gateway requests remain responsive.
-    result = await run_in_threadpool(scan_local_history, service)
-    await run_in_threadpool(service.refresh_conversation_index)
+    try:
+        result = await run_in_threadpool(scan_local_history, service)
+        await run_in_threadpool(service.refresh_conversation_index)
+    except Exception:
+        record_contribution(
+            request,
+            "history",
+            "Local history scan failed",
+            "Capyy could not scan a local Claude or Codex history source.",
+            {"route": "/api/history/scan"},
+        )
+        raise
     logger.info(
         "scanned local history records_imported=%s sources=%s",
         result["records_imported"],

@@ -215,10 +215,10 @@ def parse_tool_call(text: str) -> tuple[dict[str, Any] | None, str]:
     return None, text
 
 
-# Claude Code tool names -> (gateway tool name, {claude param name: gateway arg}).
-# Maps Claude Code's XML tool protocol to the gateway's local toolkit so the
-# VSCode extension's tool calls execute locally instead of leaking as text.
-_CLAUDE_TOOL_MAP: dict[str, tuple[str, dict[str, str]]] = {
+# Built-in aliases are a safe fallback only.  The versioned config file is the
+# source of truth, so a community-approved mapping can be shipped without a
+# Python release.
+_FALLBACK_CLAUDE_TOOL_MAP: dict[str, tuple[str, dict[str, str]]] = {
     "Read": ("read_file", {"file_path": "path"}),
     "Write": ("write_file", {"file_path": "path", "content": "content"}),
     "Edit": (
@@ -353,10 +353,7 @@ def _unescape_xml(value: str) -> str:
     )
 
 
-# Reverse of _CLAUDE_TOOL_MAP: gateway tool name -> (client tool name, arg map).
-# Used to convert a parsed gateway tool call back into the client's native tool
-# so the client (Claude Code / Cline) can execute it itself (native tool_use).
-_CLIENT_TOOL_REVERSE: dict[str, tuple[str, dict[str, str]]] = {
+_FALLBACK_CLIENT_TOOL_REVERSE: dict[str, tuple[str, dict[str, str]]] = {
     "read_file": ("Read", {"path": "file_path"}),
     "read_file_lines": ("Read", {"path": "file_path"}),
     "write_file": ("Write", {"path": "file_path", "content": "content"}),
@@ -375,6 +372,50 @@ _CLIENT_TOOL_REVERSE: dict[str, tuple[str, dict[str, str]]] = {
     "list_dir": ("ListDir", {"path": "path"}),
     "http_get": ("WebFetch", {"url": "url"}),
 }
+
+
+def load_tool_aliases(path: Path | None = None) -> tuple[
+    dict[str, tuple[str, dict[str, str]]], dict[str, tuple[str, dict[str, str]]]
+]:
+    """Load Claude-compatible aliases from ``config/tool-aliases.json``.
+
+    Invalid entries are ignored one by one and built-in mappings remain active.
+    This makes the mapping file safe to update independently of a running
+    gateway while avoiding a bad community mapping breaking all tool calls.
+    """
+    claude_map = dict(_FALLBACK_CLAUDE_TOOL_MAP)
+    reverse_map = dict(_FALLBACK_CLIENT_TOOL_REVERSE)
+    alias_path = path or Path(__file__).resolve().parents[2] / "config" / "tool-aliases.json"
+    try:
+        data = json.loads(alias_path.read_text(encoding="utf-8"))
+        mappings = data.get("mappings") if isinstance(data, dict) else None
+        if not isinstance(mappings, list):
+            raise ValueError("mappings must be a list")
+        loaded = 0
+        for item in mappings:
+            if not isinstance(item, dict) or not isinstance(item.get("canonical"), str):
+                continue
+            canonical = item["canonical"]
+            client = item.get("claude-code")
+            if not isinstance(client, dict):
+                continue
+            name, arguments = client.get("tool"), client.get("arguments")
+            if not isinstance(name, str) or not isinstance(arguments, dict) or not all(
+                isinstance(key, str) and isinstance(value, str) for key, value in arguments.items()
+            ):
+                continue
+            # JSON stores canonical-argument -> client-argument. XML parsing
+            # needs the inverse; native tool-use needs the original direction.
+            claude_map[name] = (canonical, {client_arg: gateway_arg for gateway_arg, client_arg in arguments.items()})
+            reverse_map[canonical] = (name, dict(arguments))
+            loaded += 1
+        logger.info("tool aliases loaded path=%s entries=%s", alias_path, loaded)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+        logger.warning("tool aliases unavailable path=%s; using built-ins: %s", alias_path, error)
+    return claude_map, reverse_map
+
+
+_CLAUDE_TOOL_MAP, _CLIENT_TOOL_REVERSE = load_tool_aliases()
 
 
 def _as_client_tool_call(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
