@@ -30,6 +30,7 @@ from gateway.services.toolkit import (
     coerce_client_tool_call_arguments,
     declared_client_tool_names,
     detect_tool_markers,
+    has_incomplete_tool_invoke,
     execute_tool,
     parse_tool_call,
     parse_compiler_protocol,
@@ -900,7 +901,15 @@ async def run_tool_loop_pass(
                 compiler_reasoning,
             )
         elif compiler_final:
-            logger.info("tool pass phase=compiler_completed classification=final")
+            if has_incomplete_tool_invoke(full_text) or has_incomplete_tool_invoke(full_reasoning):
+                # A bare `<tool_invoke_edit>` is neither a final answer nor an
+                # executable call. The compiler has no safe arguments to emit,
+                # so return the normal observable protocol error below rather
+                # than leaking the marker into Claude's conversation.
+                compiler_final = False
+                logger.warning("tool pass phase=compiler_rejected_incomplete_tool_marker")
+            else:
+                logger.info("tool pass phase=compiler_completed classification=final")
         else:
             logger.warning(
                 "tool pass phase=compiler_no_valid_call draft_chars=%s compiler_chars=%s",
@@ -931,7 +940,11 @@ async def run_tool_loop_pass(
                     "Unclassified upstream tool response",
                     "The compiler and its repair pass could not produce a declared tool call or final answer.",
                     {
-                        "error_code": "unclassified_tool_response",
+                        "error_code": (
+                            "incomplete_tool_invoke"
+                            if has_incomplete_tool_invoke(full_text) or has_incomplete_tool_invoke(full_reasoning)
+                            else "unclassified_tool_response"
+                        ),
                         "declared_tool_count": str(len(client_tool_names)),
                         "declared_tools": _issue_tool_names(client_tool_names),
                         "compiler_passes": "2",

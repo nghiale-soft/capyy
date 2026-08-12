@@ -127,6 +127,38 @@ class NativeToolStreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Draft to compile", client.payloads[1]["messages"][1]["content"])
         self.assertTrue(any('"name":"Read"' in event for event in events))
 
+    async def test_incomplete_internal_tool_marker_does_not_leak_as_final_text(self) -> None:
+        class IncompleteMarkerClient(_ToolPassClient):
+            async def chat_events(self, payload):
+                self.attempts += 1
+                if self.attempts == 1:
+                    yield _chunk("<tool_invoke_edit>\n\n</tool_invoke>")
+                else:
+                    yield _chunk('{"action":"final"}')
+                yield "data: [DONE]"
+
+        captured: list[tuple] = []
+        client = IncompleteMarkerClient()
+        settings = Settings(codebuff_token="token", local_api_key=None)
+        events = []
+        async for raw in _stream_tool_loop_anthropic(
+            client,
+            {"model": "deepseek/deepseek-v4-flash", "messages": [{"role": "user", "content": "edit it"}]},
+            body={"model": "deepseek/deepseek-v4-flash", "stream": True, "tools": [
+                {"name": "Edit", "input_schema": {"type": "object"}}
+            ]},
+            settings=settings,
+            model="deepseek/deepseek-v4-flash",
+            requested_model="deepseek/deepseek-v4-flash",
+            on_contribution=lambda *args: captured.append(args),
+        ):
+            events.append(raw.decode("utf-8"))
+
+        joined = "".join(events)
+        self.assertNotIn("<tool_invoke_edit>", joined)
+        self.assertIn("Gateway tool-protocol error", joined)
+        self.assertEqual(captured[0][3]["error_code"], "incomplete_tool_invoke")
+
     async def test_tool_bearing_turn_uses_protocol_final_classifier(self) -> None:
         class FinalClassifierClient(_ToolPassClient):
             async def chat_events(self, payload):

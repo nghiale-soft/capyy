@@ -334,6 +334,10 @@ class ToolCallParsingTests(unittest.TestCase):
         self.assertIn("dsml", markers)
         self.assertNotIn("dsml", detect_tool_markers("plain text"))
 
+    def test_detect_tool_markers_finds_incomplete_internal_marker(self) -> None:
+        markers = detect_tool_markers("<tool_invoke_edit>\n</tool_invoke>")
+        self.assertIn("incomplete-tool-invoke", markers)
+
     def test_parse_dsml_multi_invoke_keeps_second_for_next_iteration(self) -> None:
         # Two invokes in one tool_calls block: only the first is consumed, the
         # second must remain in clean text so the loop parses it next iteration.

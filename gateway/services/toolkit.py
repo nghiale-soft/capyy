@@ -76,6 +76,13 @@ _DSML_FRAGMENT_RE = re.compile(
     rf"</?{_DSML_BAR}+DSML{_DSML_BAR}+[a-z_]+\s*>", re.IGNORECASE
 )
 
+# Some upstream models leak a private/internal marker such as
+# ``<tool_invoke_edit>``. It is not Claude XML and contains no arguments, so
+# treating it as a final answer would leave the client visibly stuck.
+_INCOMPLETE_TOOL_INVOKE_RE = re.compile(
+    r"</?tool_invoke_[a-z0-9_\-]+\s*>", re.IGNORECASE
+)
+
 
 def detect_tool_markers(text: str) -> list[str]:
     """Return which tool-call protocols appear in a text (for leak diagnostics)."""
@@ -91,7 +98,14 @@ def detect_tool_markers(text: str) -> list[str]:
         or _DSML_INVOKE_RE.search(text)
     ):
         found.append("dsml")
+    if _INCOMPLETE_TOOL_INVOKE_RE.search(text):
+        found.append("incomplete-tool-invoke")
     return found
+
+
+def has_incomplete_tool_invoke(text: str) -> bool:
+    """Whether an upstream-only tool marker lacks executable arguments."""
+    return bool(_INCOMPLETE_TOOL_INVOKE_RE.search(text or ""))
 
 
 # Some small/free upstream models occasionally narrate a tool call ("I will
