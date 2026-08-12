@@ -61,6 +61,39 @@
         "tool": "execute_command",
         "arguments": { "command": "command" }
       }
+    },
+    {
+      "canonical": "glob",
+      "claude-code": { "tool": "Glob", "arguments": { "pattern": "pattern" } },
+      "codex": { "tool": "glob", "arguments": { "pattern": "pattern" } },
+      "cline": { "tool": "list_files", "arguments": { "path": "pattern" } }
+    },
+    {
+      "canonical": "grep",
+      "claude-code": {
+        "tool": "Grep",
+        "arguments": { "pattern": "pattern", "path": "path" }
+      },
+      "codex": {
+        "tool": "grep",
+        "arguments": { "pattern": "pattern", "path": "path" }
+      },
+      "cline": {
+        "tool": "search_files",
+        "arguments": { "regex": "pattern", "path": "path" }
+      }
+    },
+    {
+      "canonical": "list_dir",
+      "claude-code": { "tool": "ListDir", "arguments": { "path": "path" } },
+      "codex": { "tool": "list_dir", "arguments": { "path": "path" } },
+      "cline": { "tool": "list_files", "arguments": { "path": "path" } }
+    },
+    {
+      "canonical": "http_get",
+      "claude-code": { "tool": "WebFetch", "arguments": { "url": "url" } },
+      "codex": { "tool": "web_fetch", "arguments": { "url": "url" } },
+      "cline": { "tool": "fetch_instructions", "arguments": { "url": "url" } }
     }
   ]
 }
