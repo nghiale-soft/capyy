@@ -133,8 +133,10 @@ class NativeToolStreamTests(unittest.IsolatedAsyncioTestCase):
                 self.attempts += 1
                 if self.attempts == 1:
                     yield _chunk("<tool_invoke><function_calls></function_calls></tool_invoke>")
-                else:
+                elif self.attempts == 2:
                     yield _chunk('{"action":"final"}')
+                else:
+                    yield _chunk('{"action":"tool_call","name":"Read","arguments":{"file_path":"a.dart"}}')
                 yield "data: [DONE]"
 
         captured: list[tuple] = []
@@ -143,9 +145,9 @@ class NativeToolStreamTests(unittest.IsolatedAsyncioTestCase):
         events = []
         async for raw in _stream_tool_loop_anthropic(
             client,
-            {"model": "deepseek/deepseek-v4-flash", "messages": [{"role": "user", "content": "edit it"}]},
+            {"model": "deepseek/deepseek-v4-flash", "messages": [{"role": "user", "content": "read it"}]},
             body={"model": "deepseek/deepseek-v4-flash", "stream": True, "tools": [
-                {"name": "Edit", "input_schema": {"type": "object"}}
+                {"name": "Read", "input_schema": {"type": "object", "properties": {"file_path": {"type": "string"}}, "required": ["file_path"]}}
             ]},
             settings=settings,
             model="deepseek/deepseek-v4-flash",
@@ -156,8 +158,10 @@ class NativeToolStreamTests(unittest.IsolatedAsyncioTestCase):
 
         joined = "".join(events)
         self.assertNotIn("<tool_invoke>", joined)
-        self.assertIn("Gateway tool-protocol error", joined)
-        self.assertEqual(captured[0][3]["error_code"], "incomplete_tool_invoke")
+        self.assertNotIn("Gateway tool-protocol error", joined)
+        self.assertTrue(any('"name":"Read"' in event for event in events))
+        self.assertEqual(client.attempts, 3)
+        self.assertEqual(captured, [])
 
     async def test_tool_bearing_turn_uses_protocol_final_classifier(self) -> None:
         class FinalClassifierClient(_ToolPassClient):

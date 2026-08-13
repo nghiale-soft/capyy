@@ -836,6 +836,14 @@ async def run_tool_loop_pass(
         compiled_call, compiler_final = parse_compiler_protocol(compiler_text)
         if compiled_call is None and not compiler_final:
             compiled_call, compiler_final = parse_compiler_protocol(compiler_reasoning)
+        incomplete_marker = has_incomplete_tool_invoke(full_text) or has_incomplete_tool_invoke(full_reasoning)
+        if compiled_call is None and compiler_final and incomplete_marker:
+            # A bare internal marker means the upstream intended a tool turn.
+            # ``final`` from the first compiler pass is therefore invalid; let
+            # the existing one-shot repair recover a declared tool from the
+            # active request/tool state instead of immediately ending Claude.
+            compiler_final = False
+            logger.warning("tool pass phase=compiler_final_rejected_incomplete_tool_marker")
         if compiled_call is None and not compiler_final:
             # ``response_format=json_object`` is only best-effort on FreeBuff;
             # it is not native function calling.  Give the compiler exactly
@@ -851,6 +859,12 @@ async def run_tool_loop_pass(
                 "Do not include prose, Markdown, reasoning, a plan, or a flat "
                 "object. Copy tool arguments only from the supplied task/context."
             )
+            if incomplete_marker:
+                repair_instruction = (
+                    "The upstream draft is an EMPTY internal tool wrapper, so action=final "
+                    "is invalid. Select the next declared tool with concrete arguments from "
+                    "the active task or recent tool state. Return ONLY the required JSON object."
+                )
             repair_messages = [
                 compiler_system,
                 {
@@ -874,6 +888,9 @@ async def run_tool_loop_pass(
             repaired_call, repaired_final = parse_compiler_protocol(repair_text)
             if repaired_call is None and not repaired_final:
                 repaired_call, repaired_final = parse_compiler_protocol(repair_reasoning)
+            if repaired_call is None and repaired_final and incomplete_marker:
+                repaired_final = False
+                logger.warning("tool pass phase=compiler_repair_final_rejected_incomplete_tool_marker")
             if repaired_call is not None or repaired_final:
                 compiler_accumulator = repair_accumulator
                 compiler_text = repair_text
@@ -901,15 +918,7 @@ async def run_tool_loop_pass(
                 compiler_reasoning,
             )
         elif compiler_final:
-            if has_incomplete_tool_invoke(full_text) or has_incomplete_tool_invoke(full_reasoning):
-                # A bare `<tool_invoke_edit>` is neither a final answer nor an
-                # executable call. The compiler has no safe arguments to emit,
-                # so return the normal observable protocol error below rather
-                # than leaking the marker into Claude's conversation.
-                compiler_final = False
-                logger.warning("tool pass phase=compiler_rejected_incomplete_tool_marker")
-            else:
-                logger.info("tool pass phase=compiler_completed classification=final")
+            logger.info("tool pass phase=compiler_completed classification=final")
         else:
             logger.warning(
                 "tool pass phase=compiler_no_valid_call draft_chars=%s compiler_chars=%s",
@@ -942,7 +951,7 @@ async def run_tool_loop_pass(
                     {
                         "error_code": (
                             "incomplete_tool_invoke"
-                            if has_incomplete_tool_invoke(full_text) or has_incomplete_tool_invoke(full_reasoning)
+                            if incomplete_marker
                             else "unclassified_tool_response"
                         ),
                         "declared_tool_count": str(len(client_tool_names)),
