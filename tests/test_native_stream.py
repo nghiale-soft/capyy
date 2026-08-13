@@ -163,6 +163,45 @@ class NativeToolStreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.attempts, 3)
         self.assertEqual(captured, [])
 
+    async def test_invalid_edit_schema_is_repaired_before_reaching_client(self) -> None:
+        class InvalidEditThenRepairClient(_ToolPassClient):
+            async def chat_events(self, payload):
+                self.attempts += 1
+                if self.attempts == 1:
+                    yield _chunk(
+                        '<invoke name="Edit"><parameter name="file_path">a.dart</parameter>'
+                        '<parameter name="old_string">old</parameter>'
+                        '<parameter name="new_string"></parameter></invoke>'
+                    )
+                else:
+                    yield _chunk(
+                        '{"action":"tool_call","name":"Edit","arguments":'
+                        '{"file_path":"a.dart","old_string":"old","new_string":"new"}}'
+                    )
+                yield "data: [DONE]"
+
+        client = InvalidEditThenRepairClient()
+        settings = Settings(codebuff_token="token", local_api_key=None)
+        events = []
+        async for raw in _stream_tool_loop_anthropic(
+            client,
+            {"model": "deepseek/deepseek-v4-flash", "messages": [{"role": "user", "content": "edit it"}]},
+            body={"model": "deepseek/deepseek-v4-flash", "stream": True, "tools": [
+                {"name": "Edit", "input_schema": {"type": "object", "properties": {
+                    "file_path": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"},
+                }, "required": ["file_path", "old_string", "new_string"]}}
+            ]},
+            settings=settings,
+            model="deepseek/deepseek-v4-flash",
+            requested_model="deepseek/deepseek-v4-flash",
+        ):
+            events.append(raw.decode("utf-8"))
+
+        joined = "".join(events)
+        self.assertEqual(client.attempts, 2)
+        self.assertNotIn("Gateway rejected", joined)
+        self.assertIn('\\"new_string\\": \\"new\\"', joined)
+
     async def test_tool_bearing_turn_uses_protocol_final_classifier(self) -> None:
         class FinalClassifierClient(_ToolPassClient):
             async def chat_events(self, payload):

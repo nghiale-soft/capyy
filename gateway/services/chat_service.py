@@ -992,26 +992,94 @@ async def run_tool_loop_pass(
                 "tool pass phase=rejected_client_tool tool=%s reason=%s",
                 call.get("name"), reason,
             )
-            response = accumulator.final_response()
-            response["choices"][0]["message"]["content"] = (
-                "Gateway rejected an invalid tool request: " + reason
-            )
-            if on_contribution is not None:
-                on_contribution(
-                    "tool-protocol",
-                    "Invalid declared tool request",
-                    "The upstream emitted a tool call that did not match the client-declared schema.",
-                    {
-                        "error_code": "invalid_declared_tool",
-                        "emitted_tool": str(call.get("name") or "unknown")[:80],
-                        "validation": _tool_validation_code(reason),
-                        "argument_keys": _issue_argument_keys(call.get("arguments") or {}),
-                        "declared_tools": _issue_tool_names(client_tool_names),
-                    },
+            # A valid protocol envelope can still contain an incomplete schema
+            # (for example Edit with ``new_string: \"\"``). Give the private
+            # compiler one chance to repair that exact call from the active
+            # task/tool context. Never turn an empty replacement into a delete.
+            repaired_call: dict[str, Any] | None = None
+            if isinstance(client_tools, list) and client_tools:
+                repair_instruction = (
+                    "The proposed client tool call below violates the declared schema. "
+                    "Return ONLY one valid JSON object: {\"action\":\"tool_call\",\"name\":\"DECLARED_TOOL\","
+                    "\"arguments\":{...}}. Do not output action=final. Do not invent paths, "
+                    "URLs, file content, or replacement text; choose a safe declared Read/Bash "
+                    "tool instead if the missing value cannot be recovered from task/history."
                 )
-            response["choices"][0]["message"].pop("tool_calls", None)
-            response["choices"][0]["finish_reason"] = "stop"
-            return response, None
+                schema_repair_system = {
+                    "role": "system",
+                    "content": (
+                        tool_system_prompt(settings.tool_workdir, bash_enabled=settings.tool_bash_enabled)
+                        + "\n\nYou are a schema-repair compiler. The client declared this tool schema:\n"
+                        + json.dumps(client_tools, ensure_ascii=False)
+                    ),
+                }
+                repair_messages = [
+                    schema_repair_system,
+                    {
+                        "role": "user",
+                        "content": (
+                            repair_instruction
+                            + "\n\nSchema validation error:\n" + reason
+                            + "\n\nInvalid tool call:\n" + json.dumps(call, ensure_ascii=False)
+                            + "\n\nActive task context:\n" + (task_context or "<not available>")
+                            + "\n\nRecent client tool state:\n" + (execution_context or "<not available>")
+                        ),
+                    },
+                ]
+                repair_accumulator, repair_text, repair_reasoning = await _collect(
+                    repair_messages, compiler_mode=True, phase="schema_repair"
+                )
+                repaired_call, _ = parse_compiler_protocol(repair_text)
+                if repaired_call is None:
+                    repaired_call, _ = parse_compiler_protocol(repair_reasoning)
+                if repaired_call is not None:
+                    repaired_call = adapt_client_tool_call(repaired_call, client_tools)
+                    repaired_call = coerce_client_tool_call_arguments(repaired_call, client_tools)
+                    repaired_valid, repaired_reason = validate_client_tool_call(repaired_call, client_tools)
+                    if repaired_valid:
+                        logger.info(
+                            "tool pass phase=schema_repair_completed from=%s to=%s",
+                            call.get("name"), repaired_call.get("name"),
+                        )
+                        accumulator = repair_accumulator
+                        full_text = repair_text
+                        full_reasoning = repair_reasoning
+                        call = repaired_call
+                        clean_text = ""
+                        clean_reasoning = ""
+                        call_from_reasoning = False
+                        valid = True
+                    else:
+                        logger.warning(
+                            "tool pass phase=schema_repair_rejected tool=%s reason=%s",
+                            repaired_call.get("name"), repaired_reason,
+                        )
+            if valid:
+                # The repaired call reaches the normal client-native tool_use
+                # construction below.
+                pass
+            else:
+                response = accumulator.final_response()
+                response["choices"][0]["message"]["content"] = (
+                    "Gateway rejected an invalid tool request: " + reason
+                )
+                if on_contribution is not None:
+                    on_contribution(
+                        "tool-protocol",
+                        "Invalid declared tool request",
+                        "The upstream emitted a tool call that did not match the client-declared schema.",
+                        {
+                            "error_code": "invalid_declared_tool",
+                            "emitted_tool": str(call.get("name") or "unknown")[:80],
+                            "validation": _tool_validation_code(reason),
+                            "argument_keys": _issue_argument_keys(call.get("arguments") or {}),
+                            "declared_tools": _issue_tool_names(client_tool_names),
+                            "schema_repair_attempted": "true",
+                        },
+                    )
+                response["choices"][0]["message"].pop("tool_calls", None)
+                response["choices"][0]["finish_reason"] = "stop"
+                return response, None
         logger.info(
             "tool pass tool=%s args=%s clean_chars=%s body=%s",
             call["name"],
