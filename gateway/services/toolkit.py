@@ -79,8 +79,8 @@ _DSML_FRAGMENT_RE = re.compile(
 # Some upstream models leak a private/internal marker such as
 # ``<tool_invoke_edit>``. It is not Claude XML and contains no arguments, so
 # treating it as a final answer would leave the client visibly stuck.
-_INCOMPLETE_TOOL_INVOKE_RE = re.compile(
-    r"</?tool_invoke_[a-z0-9_\-]+\s*>", re.IGNORECASE
+_TOOL_INVOKE_WRAPPER_RE = re.compile(
+    r"</?(?:tool_invoke(?:_[a-z0-9_\-]+)?|function_calls)\s*>", re.IGNORECASE
 )
 
 
@@ -98,14 +98,21 @@ def detect_tool_markers(text: str) -> list[str]:
         or _DSML_INVOKE_RE.search(text)
     ):
         found.append("dsml")
-    if _INCOMPLETE_TOOL_INVOKE_RE.search(text):
+    if has_incomplete_tool_invoke(text):
         found.append("incomplete-tool-invoke")
     return found
 
 
 def has_incomplete_tool_invoke(text: str) -> bool:
-    """Whether an upstream-only tool marker lacks executable arguments."""
-    return bool(_INCOMPLETE_TOOL_INVOKE_RE.search(text or ""))
+    """Whether an upstream-only tool wrapper lacks an executable invocation.
+
+    FreeBuff may wrap a valid Claude-style ``<invoke>`` in its own
+    ``<tool_invoke><function_calls>`` tags; that is safe and is parsed by the
+    normal XML parser. The same wrapper without a nested invoke is not a tool
+    call and must never reach the IDE as ordinary assistant text.
+    """
+    value = text or ""
+    return bool(_TOOL_INVOKE_WRAPPER_RE.search(value)) and not bool(_INVOKE_RE.search(value))
 
 
 # Some small/free upstream models occasionally narrate a tool call ("I will

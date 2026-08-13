@@ -338,6 +338,14 @@ class ToolCallParsingTests(unittest.TestCase):
         markers = detect_tool_markers("<tool_invoke_edit>\n</tool_invoke>")
         self.assertIn("incomplete-tool-invoke", markers)
 
+    def test_empty_function_calls_wrapper_is_incomplete_but_valid_wrapper_is_not(self) -> None:
+        from gateway.services.toolkit import has_incomplete_tool_invoke
+
+        self.assertTrue(has_incomplete_tool_invoke("<tool_invoke><function_calls></function_calls>"))
+        self.assertFalse(has_incomplete_tool_invoke(
+            '<tool_invoke><function_calls><invoke name="Read"><parameter name="file_path">a.dart</parameter></invoke></function_calls>'
+        ))
+
     def test_parse_dsml_multi_invoke_keeps_second_for_next_iteration(self) -> None:
         # Two invokes in one tool_calls block: only the first is consumed, the
         # second must remain in clean text so the loop parses it next iteration.

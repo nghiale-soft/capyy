@@ -132,7 +132,7 @@ class NativeToolStreamTests(unittest.IsolatedAsyncioTestCase):
             async def chat_events(self, payload):
                 self.attempts += 1
                 if self.attempts == 1:
-                    yield _chunk("<tool_invoke_edit>\n\n</tool_invoke>")
+                    yield _chunk("<tool_invoke><function_calls></function_calls></tool_invoke>")
                 else:
                     yield _chunk('{"action":"final"}')
                 yield "data: [DONE]"
@@ -155,7 +155,7 @@ class NativeToolStreamTests(unittest.IsolatedAsyncioTestCase):
             events.append(raw.decode("utf-8"))
 
         joined = "".join(events)
-        self.assertNotIn("<tool_invoke_edit>", joined)
+        self.assertNotIn("<tool_invoke>", joined)
         self.assertIn("Gateway tool-protocol error", joined)
         self.assertEqual(captured[0][3]["error_code"], "incomplete_tool_invoke")
 
