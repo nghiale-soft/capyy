@@ -310,7 +310,7 @@ async def stream_openai_chunks(
             exc_info=debug,
         )
         if error.status_code in {401, 403, 429} and on_rate_limited is not None:
-            on_rate_limited()
+            on_rate_limited(error)
         yield encode_sse(
             {
                 "error": {
@@ -939,10 +939,29 @@ async def run_tool_loop_pass(
             call_after_compiler, _ = client_tool_call(full_reasoning)
         if call_after_compiler is None:
             response = accumulator.final_response()
-            response["choices"][0]["message"]["content"] = (
-                "Gateway tool-protocol error: the upstream response could not be "
-                "classified as a declared tool call or final answer. Please retry."
-            )
+            # The compiler and its repair pass could not classify the upstream
+            # turn as a declared tool call or final answer. Do not fail the user
+            # with an opaque protocol error: surface the model's actual text
+            # (with tool markers stripped) so the conversation can continue
+            # naturally. This keeps the turn observable without fabricating a
+            # tool call.
+            _, clean_text = client_tool_call(full_text)
+            if not clean_text:
+                _, clean_text = client_tool_call(full_reasoning)
+            fallback_text = (clean_text or "").strip()
+            if not fallback_text:
+                fallback_text = (full_text or "").strip()
+            if fallback_text:
+                logger.warning(
+                    "tool pass phase=tool_protocol_fallback_text text_chars=%s",
+                    len(fallback_text),
+                )
+                response["choices"][0]["message"]["content"] = fallback_text
+            else:
+                response["choices"][0]["message"]["content"] = (
+                    "Gateway tool-protocol error: the upstream response could not be "
+                    "classified as a declared tool call or final answer. Please retry."
+                )
             if on_contribution is not None:
                 on_contribution(
                     "tool-protocol",
@@ -1358,7 +1377,7 @@ async def stream_tool_agent_loop(
         response, client_call = task.result()
     except CodebuffError as error:
         if error.status_code in {401, 403, 429} and account_lease is not None:
-            account_lease.mark_rate_limited(settings.account_cooldown)
+            account_lease.mark_rate_limited(settings.account_cooldown, error=error)
         yield encode_sse(
             {
                 "error": {

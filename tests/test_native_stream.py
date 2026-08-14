@@ -361,7 +361,10 @@ class NativeToolStreamTests(unittest.IsolatedAsyncioTestCase):
         _FakeLease.closed = False
         event_types = []
         # Tiny ping interval so the slow fake upstream triggers a heartbeat.
-        with mock.patch.object(messages_module, "STREAM_PING_SECONDS", 0.01):
+        with (
+            mock.patch.object(messages_module, "STREAM_PING_SECONDS", 0.01),
+            mock.patch.object(messages_module, "STREAM_VISIBLE_PROGRESS_SECONDS", 0.01),
+        ):
             async for raw in _stream_tool_loop_anthropic(
                 client,
                 payload,
@@ -377,8 +380,11 @@ class NativeToolStreamTests(unittest.IsolatedAsyncioTestCase):
                     "",
                 )
                 event_types.append(event_line.removeprefix("event: "))
+                if "Capyy is working on this" in text:
+                    event_types.append("visible_progress")
 
         self.assertIn("ping", event_types)
+        self.assertIn("visible_progress", event_types)
         self.assertEqual(event_types[0], "message_start")
         self.assertEqual(event_types[-1], "message_stop")
 

@@ -45,6 +45,10 @@ from providers.freebuff import CodebuffError
 # approval (Claude Code / Cline show their own approval UI). 15s keeps well
 # inside any proxy idle timeout while adding negligible overhead.
 STREAM_PING_SECONDS = 15.0
+# Claude Code intentionally ignores synthetic Anthropic thinking blocks (they
+# cannot carry an Anthropic signature).  A short, ordinary text status is the
+# only protocol-valid way to avoid an unexplained empty spinner.
+STREAM_VISIBLE_PROGRESS_SECONDS = 2.0
 
 
 router = APIRouter()
@@ -260,8 +264,8 @@ async def anthropic_messages(
                     model=model,
                     requested_model=anthropic_body.get("model") or model,
                     account_lease=lease,
-                    on_rate_limited=lambda: lease.mark_rate_limited(
-                        settings.account_cooldown
+                    on_rate_limited=lambda error: lease.mark_rate_limited(
+                        settings.account_cooldown, error=error
                     ),
                     recover=recover_payload,
                     on_assistant=_on_assistant,
@@ -290,7 +294,7 @@ async def anthropic_messages(
             )
         except CodebuffError as error:
             if lease is not None and error.status_code in {401, 403, 429}:
-                lease.mark_rate_limited(settings.account_cooldown)
+                lease.mark_rate_limited(settings.account_cooldown, error=error)
             contribution_reporter(
                 "provider", "Freebuff tool pass failed",
                 "Freebuff could not complete a native client tool pass.",
@@ -340,8 +344,8 @@ async def anthropic_messages(
                 model=model,
                 requested_model=anthropic_body.get("model") or model,
                 account_lease=lease,
-                on_rate_limited=lambda: lease.mark_rate_limited(
-                    settings.account_cooldown
+                on_rate_limited=lambda error: lease.mark_rate_limited(
+                    settings.account_cooldown, error=error
                 ),
                 recover=recover_payload,
                 on_assistant=_on_assistant,
@@ -387,7 +391,7 @@ async def anthropic_messages(
         )
     except CodebuffError as error:
         if lease is not None and error.status_code in {401, 403, 429}:
-            lease.mark_rate_limited(settings.account_cooldown)
+            lease.mark_rate_limited(settings.account_cooldown, error=error)
         contribution_reporter(
             "provider", "Freebuff completion failed",
             "Freebuff could not complete a non-streaming response.",
@@ -592,7 +596,7 @@ async def _stream_anthropic_chunks(
     except CodebuffError as error:
         logger.warning("anthropic stream failed run_id=%s: %s", run.run_id, error, exc_info=debug)
         if error.status_code in {401, 403, 429} and on_rate_limited is not None:
-            on_rate_limited()
+            on_rate_limited(error)
         yield encode_anthropic_sse(
             "error",
             {
@@ -632,8 +636,9 @@ async def _stream_tool_loop_anthropic(
 ):
     """Run ONE native tool pass and stream Anthropic SSE to the client.
 
-    - Emits ``message_start`` immediately and ``ping`` heartbeats while the
-      upstream pass runs, so Claude Code never sees a silent connection.
+    - Emits ``message_start`` immediately, then a visible gateway status after
+      two seconds and ``ping`` heartbeats while the upstream pass runs. Claude
+      Code does not render unsigned synthetic thinking blocks.
     - If the model emitted a tool call, streams a native ``tool_use`` block and
       ends with ``stop_reason: tool_use`` — the client shows its own approval
       UI, runs the tool on the host and returns the result on the next request.
@@ -670,11 +675,31 @@ async def _stream_tool_loop_anthropic(
         )
     )
     logger.info("anthropic tool-pass phase=started model=%s", model)
+    started_at = time.monotonic()
+    progress_sent = False
     try:
         while True:
-            done, _ = await asyncio.wait({task}, timeout=STREAM_PING_SECONDS)
+            until_progress = max(0.0, STREAM_VISIBLE_PROGRESS_SECONDS - (time.monotonic() - started_at))
+            timeout = min(STREAM_PING_SECONDS, until_progress) if not progress_sent else STREAM_PING_SECONDS
+            done, _ = await asyncio.wait({task}, timeout=timeout)
             if done:
                 break
+            if not progress_sent and time.monotonic() - started_at >= STREAM_VISIBLE_PROGRESS_SECONDS:
+                progress_sent = True
+                logger.info("anthropic tool-pass phase=visible_progress")
+                progress_chunk = {
+                    "id": f"chatcmpl-{uuid.uuid4().hex}",
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": requested_model,
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"content": "⏳ Capyy is working on this…\n\n"},
+                        "finish_reason": None,
+                    }],
+                }
+                for event, event_data in openai_chunk_to_anthropic_events(progress_chunk, state):
+                    yield encode_anthropic_sse(event, event_data)
             # Heartbeat so Claude Code / proxies keep the connection open while
             # the upstream pass (model thinking) is still running.
             yield encode_anthropic_sse("ping", {"type": "ping"})
@@ -689,7 +714,7 @@ async def _stream_tool_loop_anthropic(
     except CodebuffError as error:
         logger.warning("anthropic tool pass failed: %s", error, exc_info=settings.debug)
         if error.status_code in {401, 403, 429} and on_rate_limited is not None:
-            on_rate_limited()
+            on_rate_limited(error)
         yield encode_anthropic_sse(
             "error",
             {

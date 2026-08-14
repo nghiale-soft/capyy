@@ -211,7 +211,7 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
                 {},
                 run,
                 account_lease=FakeLease(),
-                on_rate_limited=lambda: rate_limited.__setitem__("called", True),
+                on_rate_limited=lambda error: rate_limited.__setitem__("called", True),
             ):
                 pass
 

@@ -257,7 +257,7 @@ async def _freebuff_chat(request: Request, body: dict[str, Any], settings: Any) 
                 and isinstance(error, CodebuffError)
                 and error.status_code in {401, 403, 429}
             ):
-                lease.mark_rate_limited(settings.account_cooldown)
+                lease.mark_rate_limited(settings.account_cooldown, error=error)
             return error_response(error, request)
         finally:
             if lease is not None:
@@ -288,8 +288,8 @@ async def _freebuff_chat(request: Request, body: dict[str, Any], settings: Any) 
                 debug=settings.debug,
                 log_body_chars=settings.log_body_chars,
                 account_lease=lease,
-                on_rate_limited=lambda: lease.mark_rate_limited(
-                    settings.account_cooldown
+                on_rate_limited=lambda error: lease.mark_rate_limited(
+                    settings.account_cooldown, error=error
                 ),
                 recover=recover_payload,
                 on_assistant=_on_assistant,
@@ -335,7 +335,7 @@ async def _freebuff_chat(request: Request, body: dict[str, Any], settings: Any) 
             and isinstance(error, CodebuffError)
             and error.status_code in {401, 403, 429}
         ):
-            lease.mark_rate_limited(settings.account_cooldown)
+            lease.mark_rate_limited(settings.account_cooldown, error=error)
         return error_response(error, request)
     finally:
         if lease is not None:
