@@ -27,9 +27,18 @@ CHAT_COMPLETIONS_USER_AGENT = (
 
 
 class CodebuffError(RuntimeError):
-    def __init__(self, message: str, status_code: int = 502) -> None:
+    def __init__(
+        self,
+        message: str,
+        status_code: int = 502,
+        *,
+        retry_after_ms: int | None = None,
+        reset_at: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.retry_after_ms = retry_after_ms
+        self.reset_at = reset_at
 
 
 def is_waiting_room_required(error: CodebuffError) -> bool:
@@ -803,6 +812,8 @@ class CodebuffAccount:
     sessions: SessionManager
     busy: bool = False
     cooldown_until: float = 0.0
+    reset_at: str | None = None
+    quota_reset_epoch: float = 0.0
 
 
 @dataclass
@@ -821,9 +832,15 @@ class CodebuffAccountLease:
         await self._session_lease.aclose()
         await self._pool.release(self._account_index)
 
-    def mark_rate_limited(self, duration: float) -> None:
-        """Mark this account as 429'd upstream; no new requests for `duration` seconds."""
-        self._pool.mark_rate_limited(self._account_index, duration)
+    def mark_rate_limited(
+        self, duration: float, *, error: CodebuffError | None = None
+    ) -> None:
+        """Mark this account as 429'd upstream; no new requests for `duration` seconds.
+
+        `error` carries the upstream 429 window (`retryAfterMs` / `resetAt`) so
+        the pool honors the real reset time instead of the fixed cooldown.
+        """
+        self._pool.mark_rate_limited(self._account_index, duration, error=error)
 
     async def refresh_session(self, model: str) -> FreebuffSession:
         """Create a brand-new upstream session for this account.
@@ -891,6 +908,11 @@ class CodebuffAccountPool:
         model: str,
         messages: list[dict[str, Any]] | None = None,
     ) -> CodebuffAccountLease:
+        # Quota belongs to an account, not the whole pool.  Do not let a 429
+        # from token A prevent a healthy token B from being tried.
+        if self._all_accounts_rate_limited():
+            raise self._all_accounts_rate_limited_error()
+
         # A 429 can happen while obtaining the upstream Freebuff session,
         # before a CodebuffAccountLease exists. Previously that immediately
         # escaped to the caller, so a newly-added second token was never tried.
@@ -905,7 +927,9 @@ class CodebuffAccountPool:
                 await self.release(account_index)
                 if error.status_code not in {401, 403, 429}:
                     raise
-                self.mark_rate_limited(account_index, self._account_cooldown)
+                self.mark_rate_limited(
+                    account_index, self._account_cooldown, error=error
+                )
                 last_rate_limit = error
                 continue
             except Exception:
@@ -926,11 +950,45 @@ class CodebuffAccountPool:
             self._accounts[account_index].busy = False
             self._condition.notify(1)
 
-    def mark_rate_limited(self, account_index: int, duration: float) -> None:
-        self._accounts[account_index].cooldown_until = time.monotonic() + max(
-            0.0,
-            duration,
-        )
+    def mark_rate_limited(
+        self,
+        account_index: int,
+        duration: float,
+        *,
+        error: CodebuffError | None = None,
+    ) -> None:
+        """Mark this account as 429'd upstream; no new requests until the window passes.
+
+        The upstream 429 body carries the real reset window (`retryAfterMs` /
+        `resetAt`); honor that instead of the fixed `settings.account_cooldown`
+        so the account stays unavailable until Freebuff actually refills. The
+        reset time is kept at pool level too, so later requests fail fast with
+        a friendly message instead of retrying into the wall.
+        """
+        duration = max(0.0, duration)
+        if (
+            error is not None
+            and isinstance(error.retry_after_ms, int)
+            and error.retry_after_ms > 0
+        ):
+            duration = error.retry_after_ms / 1000.0
+        account = self._accounts[account_index]
+        account.cooldown_until = time.monotonic() + duration
+        if error is not None and error.reset_at:
+            account.reset_at = error.reset_at
+            # Parse the upstream reset window into a wall-clock epoch once, so
+            # acquire_session can gate on it directly. `resetAt` is normally
+            # hours away while `retryAfterMs` is only ~60s, so the epoch (not
+            # cooldown) is what keeps requests from hitting the wall again.
+            normalized = (
+                error.reset_at[:-1] + "+00:00"
+                if error.reset_at.endswith("Z")
+                else error.reset_at
+            )
+            try:
+                account.quota_reset_epoch = datetime.fromisoformat(normalized).timestamp()
+            except ValueError:
+                account.quota_reset_epoch = time.time() + duration
         self._default_index = (account_index + 1) % len(self._accounts)
         if self._on_default_change is not None:
             try:
@@ -938,8 +996,9 @@ class CodebuffAccountPool:
             except Exception:
                 logger.exception("failed to persist freebuff default account")
         logger.warning(
-            "freebuff account=%s unavailable; switched default account=%s",
+            "freebuff account=%s unavailable for %.0fs; switched default account=%s",
             account_index,
+            duration,
             self._default_index,
         )
 
@@ -963,9 +1022,42 @@ class CodebuffAccountPool:
         for offset in range(account_count):
             account_index = (self._default_index + offset) % account_count
             account = self._accounts[account_index]
-            if not account.busy:
+            if not account.busy and not self._account_rate_limited(account):
                 return account_index
         return None
+
+    @staticmethod
+    def _account_rate_limited(account: CodebuffAccount) -> bool:
+        return (
+            account.cooldown_until > time.monotonic()
+            or account.quota_reset_epoch > time.time()
+        )
+
+    def _all_accounts_rate_limited(self) -> bool:
+        return bool(self._accounts) and all(
+            self._account_rate_limited(account) for account in self._accounts
+        )
+
+    def _all_accounts_rate_limited_error(self) -> CodebuffError:
+        limited = [account for account in self._accounts if self._account_rate_limited(account)]
+        reset_account = min(
+            (account for account in limited if account.quota_reset_epoch > time.time()),
+            key=lambda account: account.quota_reset_epoch,
+            default=None,
+        )
+        if reset_account is not None:
+            when = reset_account.reset_at or f"in {int(reset_account.quota_reset_epoch - time.time())}s"
+            message = (
+                f"All Freebuff tokens have exhausted their quota; the next refill is {when} "
+                "(UTC). Add another Freebuff token in Dashboard → Freebuff Tokens "
+                "or configure a lower-priority provider."
+            )
+            return CodebuffError(message, 429, reset_at=reset_account.reset_at)
+        return CodebuffError(
+            "All Freebuff tokens are temporarily rate-limited. "
+            "Configure a lower-priority provider or retry shortly.",
+            429,
+        )
 
 
 def utc_now_iso() -> str:
@@ -1033,9 +1125,36 @@ def _upstream_error(
     # Keep upstream 4xx (e.g. 429 rate limit); only 5xx is normalized to 502.
     # That way clients (e.g. Claude Code) retry 429 with their own rate-limit logic.
     status_code = 502 if response.status_code >= 500 else response.status_code
+
+    # Parse the upstream rate-limit window (retryAfterMs / resetAt) from the 429
+    # body so the pool can honor the real reset time instead of a fixed cooldown.
+    retry_after_ms: int | None = None
+    reset_at: str | None = None
+    if response.status_code == 429:
+        try:
+            data = (
+                response.json()
+                if body is None
+                else httpx.Response(
+                    response.status_code,
+                    content=body,
+                    headers=response.headers,
+                ).json()
+            )
+        except ValueError:
+            data = {}
+        retry_after_ms = data.get("retryAfterMs")
+        reset_at = data.get("resetAt")
+        if not isinstance(retry_after_ms, int):
+            retry_after_ms = None
+        if not isinstance(reset_at, str) or not reset_at:
+            reset_at = None
+
     return CodebuffError(
         f"{prefix}: {response.status_code} {text}",
         status_code,
+        retry_after_ms=retry_after_ms,
+        reset_at=reset_at,
     )
 
 

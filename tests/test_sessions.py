@@ -361,7 +361,7 @@ class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
                 await next_lease.aclose()
                 await pool.aclose()
 
-    async def test_account_pool_falls_back_when_all_accounts_rate_limited(self):
+    async def test_account_pool_reports_when_all_accounts_rate_limited(self):
         settings = Settings(
             codebuff_token="token-a,token-b",
             local_api_key=None,
@@ -375,12 +375,11 @@ class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
             second = await pool.acquire_session("deepseek/deepseek-v4-flash")
             second.mark_rate_limited(60)
             await second.aclose()
-            # Cả 2 account đang cooldown -> fallback về account sớm hết cooldown nhất
-            third = await pool.acquire_session("deepseek/deepseek-v4-flash")
+            # Cả 2 account đang cooldown: không gửi thêm request vào upstream.
             try:
-                self.assertEqual(third.client.settings.codebuff_token, "token-a")
+                with self.assertRaisesRegex(CodebuffError, "All Freebuff tokens"):
+                    await pool.acquire_session("deepseek/deepseek-v4-flash")
             finally:
-                await third.aclose()
                 await pool.aclose()
 
 
