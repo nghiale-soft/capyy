@@ -262,6 +262,24 @@ class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_fresh_cached_session_does_not_probe_upstream(self):
+        client = SwitchModelClient()
+        manager = SessionManager(
+            client,
+            Settings(codebuff_token="token", local_api_key=None),
+        )
+        cached = FreebuffSession(
+            instance_id="cached-instance",
+            model="deepseek/deepseek-v4-flash",
+            remaining_ms=120_000,
+        )
+        manager._sessions[cached.model] = cached
+
+        session = await manager.ensure_session(cached.model)
+
+        self.assertIs(session, cached)
+        self.assertEqual(client.calls, [])
+
     async def test_session_lease_blocks_model_switch_until_chat_releases(self):
         client = LeaseSwitchModelClient()
         manager = SessionManager(

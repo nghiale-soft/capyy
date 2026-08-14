@@ -624,35 +624,19 @@ class SessionManager:
     ) -> FreebuffSession:
         cached = self._sessions.get(model)
         if cached and cached.is_fresh:
-            try:
-                data = await self.client.get_session(cached.instance_id)
-                if data.get("status") == "active" and data.get("model") in {
-                    None,
-                    model,
-                }:
-                    cached.remaining_ms = data.get("remainingMs")
-                    logger.debug(
-                        "reuse freebuff session model=%s instance_id=%s remaining_ms=%s",
-                        model,
-                        cached.instance_id,
-                        cached.remaining_ms,
-                    )
-                    return cached
-                if data.get("status") == "active":
-                    logger.info(
-                        "cached freebuff session model mismatch cached=%s upstream=%s",
-                        model,
-                        data.get("model"),
-                    )
-                    self._sessions.pop(model, None)
-            except CodebuffError:
-                logger.debug(
-                    "cached freebuff session invalid model=%s instance_id=%s",
-                    model,
-                    cached.instance_id,
-                    exc_info=self.settings.debug,
-                )
-                self._sessions.pop(model, None)
+            # FreeBuff's session inspection is routinely slower than a whole
+            # terminal turn.  ``remaining_ms`` is already supplied when the
+            # session is created/discovered, so reuse it directly while fresh.
+            # A genuinely stale session is handled by the existing 428 refresh
+            # path during the chat request; probing before every turn only
+            # adds a 10–20 second round trip.
+            logger.info(
+                "reuse cached freebuff session model=%s instance_id=%s remaining_ms=%s",
+                model,
+                cached.instance_id,
+                cached.remaining_ms,
+            )
+            return cached
 
         active_session = await self._delete_locked_session(model)
         if active_session:
