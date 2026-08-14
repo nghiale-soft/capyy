@@ -281,6 +281,17 @@ last time?"*:
   context), `always` or `off`,
   `FREEBUFF_HISTORY_CONTEXT_MAX_CHARS=4000`.
 
+### Optional collapsible FreeBuff reasoning (MCP experiment)
+
+`tool/mcp/capyy_reasoning_mcp.py` is a zero-permission, host-side MCP server
+with one tool: `show_reasoning(text)`. It lets a client render sanitized
+FreeBuff reasoning as a collapsible **Capyy Reasoning** tool step rather than
+pretending it is a file read or shell command. Copy
+`tool/mcp/capyy-reasoning.mcp.json`, replace the absolute script path, then add
+it to Claude/Codex as an MCP server. The gateway-side automatic handoff is
+intentionally gated until the client has declared this tool, so an uninstalled
+MCP can never interrupt a chat.
+
 **Source of each exchange (2 dimensions):** every record carries
 `meta.source` — the **client** you talk through — plus `meta.provider` — the
 **AI backend** that actually answers — plus `meta.via` (`gateway` when the

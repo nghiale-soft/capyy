@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "capyy-reasoning": {
+      "command": "python3",
+      "args": ["/ABSOLUTE/PATH/TO/capyy/tool/mcp/capyy_reasoning_mcp.py"]
+    }
+  }
+}
