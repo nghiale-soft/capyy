@@ -543,6 +543,53 @@ class ChatHistoryService:
                     item["title"] = _truncate(_clean_message_text(str(row.get("content") or "")), 88)
         return sorted(grouped.values(), key=lambda item: item["last_ts"], reverse=True)
 
+    def execute_history_tool(self, call: dict[str, Any], current_project: str) -> str:
+        """Read-only virtual history filesystem for the upstream model.
+
+        No host path is ever returned.  Calls are intentionally audited with
+        metadata only, never transcript contents.
+        """
+        name = str(call.get("name") or "")
+        args = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
+        requested = _sanitize_filename(str(args.get("project") or current_project))
+        if name == "history_projects":
+            result: Any = [
+                {key: item.get(key) for key in ("key", "folder", "title", "last_ts", "count")}
+                for item in self.list_projects()
+            ]
+            project_for_log = "all"
+            session_for_log = ""
+        elif name == "history_sessions":
+            result = self.sessions(requested)
+            project_for_log = requested
+            session_for_log = ""
+        elif name == "history_read":
+            session_id = str(args.get("session") or args.get("session_id") or "").strip()
+            if not session_id:
+                return "history_read requires a non-empty session id from history_sessions."
+            limit = min(max(int(args.get("limit") or 20), 1), 100)
+            offset = max(int(args.get("offset") or 0), 0)
+            rows = self.messages(requested, session_id=session_id, limit=limit, offset=offset)
+            result = {
+                "project": requested,
+                "session": session_id,
+                "offset": offset,
+                "count": len(rows),
+                "records": rows,
+            }
+            project_for_log = requested
+            session_for_log = _sanitize_filename(session_id)
+        else:
+            return f"Unknown gateway history tool: {name}"
+        rendered = json.dumps(result, ensure_ascii=False)
+        # Keep tool-result context bounded even if a client asks for too much.
+        rendered = _truncate(rendered, 50_000)
+        logger.info(
+            "history tool audit tool=%s current_project=%s requested_project=%s session=%s result_chars=%s",
+            name, current_project, project_for_log, session_for_log, len(rendered),
+        )
+        return rendered
+
     def conversations(self) -> list[dict[str, Any]]:
         """Return the cached lightweight conversation index immediately."""
         return list(self._conversation_cache)

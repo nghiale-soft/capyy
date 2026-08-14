@@ -269,15 +269,16 @@ last time?"*:
   /path/to/project` (or `x-project-id`) on chat requests; otherwise the
   gateway looks in `metadata` of the body (cwd/project_path/workspace). If
   nothing is found, it falls back to the `default` project.
-- **Recall:** when a question hints at the past ("bạn có nhớ", "lần trước",
-  "hôm qua", "remember", "last time"...), the gateway injects relevant older
-  exchanges into the context (filtered by specific keywords in the question,
-  e.g. "429").
+- **Recall:** the gateway injects a bounded tail of the current session. When
+  more context is genuinely needed, the model can use the read-only virtual
+  tools `history_projects`, `history_sessions`, and `history_read` to browse
+  project/session history page by page. These tools expose no Docker or host
+  paths and every lookup is audit-logged without transcript content.
 - **Retention: 1 year max:** rows older than
   `FREEBUFF_HISTORY_MAX_AGE_DAYS=365` are pruned automatically.
 - Config: `FREEBUFF_HISTORY_DIR=data/chat_history`,
-  `FREEBUFF_HISTORY_INJECT_MODE=memory_only` (inject when asked about the
-  past), `always` (inject on every request) or `off`,
+  `FREEBUFF_HISTORY_INJECT_MODE=memory_only` (keeps bounded current-session
+  context), `always` or `off`,
   `FREEBUFF_HISTORY_CONTEXT_MAX_CHARS=4000`.
 
 **Source of each exchange (2 dimensions):** every record carries

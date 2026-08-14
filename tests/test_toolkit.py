@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from gateway.core.config import Settings
-from gateway.services.chat_service import run_tool_agent_loop
+from gateway.services.chat_service import run_tool_agent_loop, run_tool_loop_pass
 from gateway.services.toolkit import (
     client_tool_call,
     detect_tool_markers,
@@ -599,6 +599,33 @@ def _chunk(content: str) -> str:
 
 
 class ToolAgentLoopTests(unittest.IsolatedAsyncioTestCase):
+    async def test_native_pass_executes_gateway_history_without_client_tool(self) -> None:
+        class HistoryClient:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def chat_events(self, payload):
+                self.calls += 1
+                if self.calls == 1:
+                    yield _chunk('<<<TOOL_CALL>>>{"name":"history_sessions","arguments":{}}<<<END_TOOL_CALL>>>')
+                else:
+                    assert "gateway history result" in str(payload["messages"][-1]["content"])
+                    yield _chunk("Đã đọc đúng lịch sử.")
+                yield "data: [DONE]"
+
+        client = HistoryClient()
+        settings = Settings(codebuff_token="token", local_api_key=None)
+        response, client_call = await run_tool_loop_pass(
+            client,
+            {"model": "deepseek/deepseek-v4-flash", "messages": [{"role": "user", "content": "nhớ gì?"}]},
+            settings=settings,
+            model="deepseek/deepseek-v4-flash",
+            history_executor=lambda call: '[{"id":"s1"}]',
+        )
+        self.assertIsNone(client_call)
+        self.assertEqual(response["choices"][0]["message"]["content"], "Đã đọc đúng lịch sử.")
+        self.assertEqual(client.calls, 2)
+
     async def test_loop_executes_tool_and_returns_final_answer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "notes.txt").write_text(

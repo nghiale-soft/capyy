@@ -187,6 +187,14 @@ Available tools:
 - json_parse(text) -> validate + pretty-print JSON
 - browser_open(url) / browser_snapshot() / browser_click(selector) / browser_type(selector, text) / browser_eval(js) / browser_screenshot(path?) / browser_close() -> headless Chrome session (navigation/click/type ask approval)
 
+Gateway virtual history tools (read-only; do not use shell paths for history):
+- history_projects() -> project titles and previews
+- history_sessions(project?) -> sessions in a project; omit project for the current project
+- history_read(project?, session, offset=0, limit=20) -> page through one session
+Use these only when prior conversation context is necessary to answer the user.
+First inspect sessions, then read only the relevant session/page. Do not call
+them for greetings, translation, or self-contained questions.
+
 Work directory: {workdir}
 After the tool output arrives, continue reasoning and, when the task is done, reply
 to the user WITHOUT any tool-call line."""

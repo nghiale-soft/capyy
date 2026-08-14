@@ -651,6 +651,8 @@ async def run_tool_loop_pass(
     log_body_chars: int = 2000,
     client_tools: Any | None = None,
     on_contribution: Any | None = None,
+    history_executor: Any | None = None,
+    history_depth: int = 0,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Run ONE upstream pass with the text-protocol tool prompt.
 
@@ -997,6 +999,54 @@ async def run_tool_loop_pass(
             clean_reasoning = ""
         call_from_reasoning = call is not None
     if call is not None:
+        # History is a gateway-owned virtual filesystem, never a client tool:
+        # execute it here and give the model its bounded result in a follow-up
+        # pass. The IDE therefore receives neither a host-path request nor an
+        # approval dialog for a read-only history lookup.
+        if (
+            history_executor is not None
+            and call.get("name") in {"history_projects", "history_sessions", "history_read"}
+        ):
+            if history_depth >= 3:
+                response = accumulator.final_response()
+                response["choices"][0]["message"]["content"] = (
+                    "History lookup stopped after three read-only steps; summarize the available context."
+                )
+                response["choices"][0]["finish_reason"] = "stop"
+                return response, None
+            result = history_executor(call)
+            followup_messages = list(payload.get("messages") or [])
+            if clean_text:
+                followup_messages.append({"role": "assistant", "content": clean_text})
+            followup_messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"[gateway history result for {call['name']} "
+                        f"{call.get('arguments') or {}}]:\n{result}\n\n"
+                        "Use this result to continue the user's request."
+                    ),
+                }
+            )
+            followup_payload = dict(payload)
+            followup_payload["messages"] = followup_messages
+            logger.info(
+                "tool pass phase=history_followup tool=%s depth=%s result_chars=%s",
+                call["name"], history_depth + 1, len(result),
+            )
+            return await run_tool_loop_pass(
+                client,
+                followup_payload,
+                settings=settings,
+                model=model,
+                recover=recover,
+                debug=debug,
+                log_body_chars=log_body_chars,
+                client_tools=client_tools,
+                on_contribution=on_contribution,
+                history_executor=history_executor,
+                history_depth=history_depth + 1,
+            )
         adapted_call = adapt_client_tool_call(call, client_tools)
         if adapted_call != call:
             logger.info(
@@ -1346,6 +1396,7 @@ async def stream_tool_agent_loop(
     on_assistant: Any | None = None,
     client_tools: Any | None = None,
     on_contribution: Any | None = None,
+    history_executor: Any | None = None,
 ) -> AsyncIterator[bytes]:
     """Run ONE native tool pass and stream OpenAI SSE to the client.
 
@@ -1366,6 +1417,7 @@ async def stream_tool_agent_loop(
             log_body_chars=log_body_chars,
             client_tools=client_tools,
             on_contribution=on_contribution,
+            history_executor=history_executor,
         )
     )
     try:

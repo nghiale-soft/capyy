@@ -229,6 +229,7 @@ async def _freebuff_chat(request: Request, body: dict[str, Any], settings: Any) 
                     log_body_chars=settings.log_body_chars,
                     client_tools=body.get("tools"),
                     on_contribution=contribution_reporter,
+                    history_executor=lambda call: chat_history.execute_history_tool(call, project_key),
                     account_lease=lease,
                     on_assistant=_on_assistant,
                 ),
@@ -252,6 +253,7 @@ async def _freebuff_chat(request: Request, body: dict[str, Any], settings: Any) 
                 log_body_chars=settings.log_body_chars,
                 client_tools=body.get("tools"),
                 on_contribution=contribution_reporter,
+                history_executor=lambda call: chat_history.execute_history_tool(call, project_key),
             )
         except Exception as error:
             if (

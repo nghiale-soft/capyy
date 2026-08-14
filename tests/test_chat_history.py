@@ -80,6 +80,17 @@ class ChatHistoryTests(unittest.TestCase):
         self.assertTrue(service._chat_file("p", "alpha").exists())
         self.assertTrue(service._chat_file("p", "beta").exists())
 
+    def test_virtual_history_tools_expose_no_host_paths(self):
+        service = ChatHistoryService(_settings())
+        service.record("work", role="user", content="nghiệp vụ quản lý công việc", meta={"session_id": "s1"})
+        service.record("work", role="assistant", content="đã phân tích", meta={"session_id": "s1"})
+
+        sessions = json.loads(service.execute_history_tool({"name": "history_sessions", "arguments": {}}, "work"))
+        self.assertEqual(sessions[0]["id"], "s1")
+        records = json.loads(service.execute_history_tool({"name": "history_read", "arguments": {"session": "s1"}}, "work"))
+        self.assertEqual(records["records"][0]["content"], "nghiệp vụ quản lý công việc")
+        self.assertNotIn(str(service.root), json.dumps(records, ensure_ascii=False))
+
     def test_build_context_with_messages_list_triggers(self):
         """Routes truyền body.messages (list dict) -> vẫn nhận diện memory."""
         service = ChatHistoryService(_settings())

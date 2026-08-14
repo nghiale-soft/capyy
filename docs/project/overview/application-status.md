@@ -18,7 +18,7 @@ the dashboard defaults to port `2222`.
 | Provider management | Implemented through `/api/providers/*`; configuration is persisted in `config/providers.json` by default |
 | FreeBuff account pool | Implemented with file-backed tokens, round-robin, cooldown, retry, and dashboard management |
 | Dashboard | Implemented as a separate FastAPI app on port `2222` |
-| Chat history | Implemented as per-project/per-session JSONL storage, bounded current-session recall, and Claude Code/Codex import |
+| Chat history | Implemented as per-project/per-session JSONL storage, bounded current-session recall, read-only virtual browse tools with audit logs, and Claude Code/Codex import |
 | Local tool loop and approval | Implemented; tool modes and pending approvals are managed through `/api/tools/*` |
 | Figma tokens/tools | Implemented with default and per-project token support |
 | Optional Chromium | Dashboard can download the Playwright Chromium runtime to the persistent data volume |

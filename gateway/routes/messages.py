@@ -272,6 +272,7 @@ async def anthropic_messages(
                     recover=recover_payload,
                     on_assistant=_on_assistant,
                     on_contribution=contribution_reporter,
+                    history_executor=lambda call: chat_history.execute_history_tool(call, project_key),
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -293,6 +294,7 @@ async def anthropic_messages(
                 log_body_chars=settings.log_body_chars,
                 client_tools=body.get("tools"),
                 on_contribution=contribution_reporter,
+                history_executor=lambda call: chat_history.execute_history_tool(call, project_key),
             )
         except CodebuffError as error:
             if lease is not None and error.status_code in {401, 403, 429}:
@@ -352,6 +354,7 @@ async def anthropic_messages(
                 recover=recover_payload,
                 on_assistant=_on_assistant,
                 on_contribution=contribution_reporter,
+                history_executor=lambda call: chat_history.execute_history_tool(call, project_key),
             ),
             media_type="text/event-stream",
             headers={
@@ -637,6 +640,7 @@ async def _stream_tool_loop_anthropic(
     recover: Any | None = None,
     on_assistant: Any | None = None,
     on_contribution: Any | None = None,
+    history_executor: Any | None = None,
 ):
     """Run ONE native tool pass and stream Anthropic SSE to the client.
 
@@ -676,6 +680,7 @@ async def _stream_tool_loop_anthropic(
             log_body_chars=settings.log_body_chars,
             client_tools=body.get("tools"),
             on_contribution=on_contribution,
+            history_executor=history_executor,
         )
     )
     logger.info("anthropic tool-pass phase=started model=%s", model)
