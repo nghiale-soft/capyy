@@ -14,6 +14,7 @@ logger = logging.getLogger("gateway.services.chat_history")
 # Optional headers clients can use to declare the project path when it cannot be inferred.
 PROJECT_PATH_HEADER = "x-project-path"
 PROJECT_ID_HEADER = "x-project-id"
+SESSION_ID_HEADERS = ("x-session-id", "x-conversation-id")
 
 # Keywords suggesting the user is asking about a past conversation.
 _MEMORY_PATTERNS = (
@@ -108,7 +109,7 @@ class ChatHistoryService:
     """Stores per-project chat history for recall when the user asks about the past.
 
     Design:
-    - One JSONL file per project: ``<history_dir>/chats/<key>.jsonl``.
+    - One JSONL file per conversation: ``<history_dir>/projects/<project>/sessions/<session>.jsonl``.
     - Stable key based on the **git remote URL** when present (survives folder
       rename/move), otherwise the folder name. ``projects.json`` keeps the
       mapping from key to every path/name seen, so renamed folders are recognized.
@@ -119,11 +120,16 @@ class ChatHistoryService:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.root = Path(settings.history_dir)
+        # ``chats`` is kept only as a read-only legacy location. New writes are
+        # split by project and conversation so a request never scans an entire
+        # project's transcript just to recover the current chat context.
         self.chats_dir = self.root / "chats"
+        self.projects_dir = self.root / "projects"
         self.projects_file = self.root / "projects.json"
         self.conversation_index_file = self.root / "conversations.json"
         self.max_age_ms = settings.history_max_age_days * 86_400_000
         self.chats_dir.mkdir(parents=True, exist_ok=True)
+        self.projects_dir.mkdir(parents=True, exist_ok=True)
         self._conversation_cache: list[dict[str, Any]] = self._load_conversation_index()
 
     def _load_conversation_index(self) -> list[dict[str, Any]]:
@@ -234,6 +240,26 @@ class ChatHistoryService:
         key, metadata = self._identity_for_path(str(raw_path))
         return self._register_project(key, metadata)
 
+    def resolve_session(self, request: Any, body: dict[str, Any]) -> str:
+        """Return the client conversation id; this is never an API token.
+
+        Claude/Codex integrations can send either ``x-session-id`` or
+        ``metadata.session_id``.  Bare API callers do not have a durable chat
+        id, so they intentionally share the small ``gateway`` session.
+        """
+        if request is not None:
+            for header in SESSION_ID_HEADERS:
+                value = request.headers.get(header)
+                if value:
+                    return _sanitize_filename(str(value))
+        metadata = body.get("metadata") if isinstance(body, dict) else None
+        if isinstance(metadata, dict):
+            for key in ("session_id", "sessionId", "conversation_id", "conversationId"):
+                value = metadata.get(key)
+                if value:
+                    return _sanitize_filename(str(value))
+        return "gateway"
+
     def _register_project(self, key: str, metadata: dict[str, Any]) -> str:
         """Update the projects.json index and return the stable key.
 
@@ -303,8 +329,27 @@ class ChatHistoryService:
     # Store / read history
     # ------------------------------------------------------------------
 
-    def _chat_file(self, project_key: str) -> Path:
+    def _project_dir(self, project_key: str) -> Path:
+        return self.projects_dir / _sanitize_filename(project_key)
+
+    def _chat_file(self, project_key: str, session_id: str = "gateway") -> Path:
+        path = self._project_dir(project_key) / "sessions" / f"{_sanitize_filename(session_id)}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _legacy_chat_file(self, project_key: str) -> Path:
         return self.chats_dir / f"{_sanitize_filename(project_key)}.jsonl"
+
+    @staticmethod
+    def _session_id(meta: dict[str, Any] | None) -> str:
+        return _sanitize_filename(str((meta or {}).get("session_id") or "gateway"))
+
+    def _session_files(self, project_key: str) -> list[Path]:
+        directory = self._project_dir(project_key) / "sessions"
+        try:
+            return list(directory.glob("*.jsonl"))
+        except OSError:
+            return []
 
     def record(
         self,
@@ -328,7 +373,8 @@ class ChatHistoryService:
         # Dedupe (text only): skip if the last row in the file is identical
         # (client retries the same question -> avoid duplicates). Tool/thinking-only
         # records are always written.
-        if text and self._last_recorded(project_key) == (role, text):
+        session_id = self._session_id(meta)
+        if text and self._last_recorded(project_key, session_id) == (role, text):
             return
         line = {
             "ts": _now_ms(),
@@ -343,29 +389,28 @@ class ChatHistoryService:
         if meta:
             line["meta"] = meta
         try:
-            with self._chat_file(project_key).open("a", encoding="utf-8") as fh:
+            path = self._chat_file(project_key, session_id)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(line, ensure_ascii=False) + "\n")
         except OSError as error:
             logger.warning("failed to record chat history: %s", error)
             return
-        self.prune(project_key)
+        # Pruning is performed by the history sync task, not on every turn.
+        # Rewriting a 100 MB transcript here was the main request-path stall.
 
-    def _last_recorded(self, project_key: str) -> tuple[str, str] | None:
+    def _last_recorded(self, project_key: str, session_id: str = "gateway") -> tuple[str, str] | None:
         """Return (role, content) of the last row, None if the file is empty."""
-        path = self._chat_file(project_key)
+        path = self._chat_file(project_key, session_id)
         if not path.exists():
             return None
         try:
-            raw = path.read_text(encoding="utf-8").strip()
+            rows = _tail_jsonl(path, 1)
+            if rows:
+                return (rows[-1].get("role"), str(rows[-1].get("content") or ""))
         except OSError:
-            return None
-        if not raw:
-            return None
-        try:
-            row = json.loads(raw.splitlines()[-1])
-        except (json.JSONDecodeError, IndexError):
-            return None
-        return (row.get("role"), str(row.get("content") or ""))
+            pass
+        return None
 
     # ------------------------------------------------------------------
     # API/UI: list projects + read messages + delete project
@@ -377,6 +422,7 @@ class ChatHistoryService:
         keys = set(projects.keys())
         try:
             keys.update(path.stem for path in self.chats_dir.glob("*.jsonl"))
+            keys.update(path.name for path in self.projects_dir.iterdir() if path.is_dir())
         except OSError:
             pass
         result: list[dict[str, Any]] = []
@@ -391,43 +437,36 @@ class ChatHistoryService:
             title = ""
             sources: set[str] = set()
             providers: set[str] = set()
-            path = self._chat_file(key)
-            if path.exists():
-                try:
-                    for raw in path.read_text(encoding="utf-8").splitlines():
-                        if not raw.strip():
-                            continue
-                        try:
-                            row = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
-                        count += 1
-                        ts = int(row.get("ts") or 0)
-                        content = str(row.get("content") or "")
-                        if ts >= last_ts:
-                            last_ts = ts
-                            if content:
-                                last_content = content[:200]
-                        role = row.get("role")
-                        if role == "user" and content:
-                            # Auto title = first meaningful user message; the
-                            # preview = newest user message, both cleaned of AI
-                            # wrappers so the list shows the real question.
-                            clean = _clean_message_text(content)
-                            if ts >= last_user_ts:
-                                last_user_ts = ts
-                                last_user_content = _truncate(clean, 160)
-                            if not title and clean:
-                                title = _truncate(clean, 72)
-                            if not first_ts:
-                                first_ts = ts
-                        meta = row.get("meta")
-                        if isinstance(meta, dict) and meta.get("source"):
-                            sources.add(str(meta["source"]))
-                        if isinstance(meta, dict) and meta.get("provider"):
-                            providers.add(str(meta["provider"]))
-                except OSError:
-                    pass
+            paths = self._session_files(key)
+            # Legacy files remain visible in the dashboard until their next
+            # background import; they are deliberately never used for request
+            # context, where their size previously caused multi-second stalls.
+            if not paths and self._legacy_chat_file(key).exists():
+                paths = [self._legacy_chat_file(key)]
+            for path in paths:
+                for row in _read_jsonl(path):
+                    count += 1
+                    ts = int(row.get("ts") or 0)
+                    content = str(row.get("content") or "")
+                    if ts >= last_ts:
+                        last_ts = ts
+                        if content:
+                            last_content = content[:200]
+                    role = row.get("role")
+                    if role == "user" and content:
+                        clean = _clean_message_text(content)
+                        if ts >= last_user_ts:
+                            last_user_ts = ts
+                            last_user_content = _truncate(clean, 160)
+                        if not title and clean:
+                            title = _truncate(clean, 72)
+                        if not first_ts:
+                            first_ts = ts
+                    meta = row.get("meta")
+                    if isinstance(meta, dict) and meta.get("source"):
+                        sources.add(str(meta["source"]))
+                    if isinstance(meta, dict) and meta.get("provider"):
+                        providers.add(str(meta["provider"]))
             result.append(
                 {
                     "key": key,
@@ -451,30 +490,19 @@ class ChatHistoryService:
         self,
         project_key: str,
         *,
+        session_id: str | None = None,
         limit: int = 100,
         offset: int = 0,
         newest_first_page: bool = False,
     ) -> list[dict[str, Any]]:
         """Read project messages, optionally paging from the newest records."""
-        path = self._chat_file(project_key)
-        if not path.exists():
-            return []
         cutoff = _now_ms() - self.max_age_ms
         rows: list[dict[str, Any]] = []
-        try:
-            with path.open(encoding="utf-8") as fh:
-                for raw in fh:
-                    if not raw.strip():
-                        continue
-                    try:
-                        row = json.loads(raw)
-                    except json.JSONDecodeError:
-                        continue
-                    if int(row.get("ts") or 0) >= cutoff:
-                        rows.append(row)
-        except OSError as error:
-            logger.warning("failed to read chat history: %s", error)
-            return []
+        paths = [self._chat_file(project_key, session_id)] if session_id else self._session_files(project_key)
+        if not paths and self._legacy_chat_file(project_key).exists():
+            paths = [self._legacy_chat_file(project_key)]
+        for path in paths:
+            rows.extend(row for row in _read_jsonl(path) if int(row.get("ts") or 0) >= cutoff)
         # External sessions are imported file-by-file, so append order is not
         # necessarily chronological across sessions. The dashboard must always
         # render the actual newest conversation at its bottom.
@@ -487,21 +515,32 @@ class ChatHistoryService:
 
     def sessions(self, project_key: str) -> list[dict[str, Any]]:
         """Summarize independent Claude/Codex sessions within one project."""
-        rows = self.messages(project_key, limit=1_000_000)
         grouped: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
-            session_id = str(meta.get("session_id") or "gateway")
-            item = grouped.setdefault(session_id, {"id": session_id, "count": 0, "first_ts": 0, "last_ts": 0, "title": "", "source": meta.get("source") or "gateway"})
-            item["count"] += 1
-            ts = int(row.get("ts") or 0)
-            if not item["first_ts"] or ts < item["first_ts"]:
-                item["first_ts"] = ts
-            item["last_ts"] = max(item["last_ts"], ts)
-            if not item["title"] and row.get("role") == "user":
-                title = _clean_message_text(str(row.get("content") or ""))
-                if title:
-                    item["title"] = _truncate(title, 88)
+        for path in self._session_files(project_key):
+            session_id = path.stem
+            for row in self.messages(project_key, session_id=session_id, limit=1_000_000):
+                meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+                item = grouped.setdefault(session_id, {"id": session_id, "count": 0, "first_ts": 0, "last_ts": 0, "title": "", "source": meta.get("source") or "gateway"})
+                item["count"] += 1
+                ts = int(row.get("ts") or 0)
+                if not item["first_ts"] or ts < item["first_ts"]:
+                    item["first_ts"] = ts
+                item["last_ts"] = max(item["last_ts"], ts)
+                if not item["title"] and row.get("role") == "user":
+                    title = _clean_message_text(str(row.get("content") or ""))
+                    if title:
+                        item["title"] = _truncate(title, 88)
+        if not grouped and self._legacy_chat_file(project_key).exists():
+            for row in self.messages(project_key, limit=1_000_000):
+                meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+                session_id = self._session_id(meta)
+                item = grouped.setdefault(session_id, {"id": session_id, "count": 0, "first_ts": 0, "last_ts": 0, "title": "", "source": meta.get("source") or "gateway"})
+                item["count"] += 1
+                ts = int(row.get("ts") or 0)
+                item["first_ts"] = ts if not item["first_ts"] else min(item["first_ts"], ts)
+                item["last_ts"] = max(item["last_ts"], ts)
+                if not item["title"] and row.get("role") == "user":
+                    item["title"] = _truncate(_clean_message_text(str(row.get("content") or "")), 88)
         return sorted(grouped.values(), key=lambda item: item["last_ts"], reverse=True)
 
     def conversations(self) -> list[dict[str, Any]]:
@@ -534,7 +573,9 @@ class ChatHistoryService:
 
     def delete_project(self, project_key: str) -> None:
         """Delete the history file and its entry in projects.json."""
-        self._chat_file(project_key).unlink(missing_ok=True)
+        import shutil
+        shutil.rmtree(self._project_dir(project_key), ignore_errors=True)
+        self._legacy_chat_file(project_key).unlink(missing_ok=True)
         projects = self._load_projects()
         if project_key in projects:
             del projects[project_key]
@@ -553,8 +594,8 @@ class ChatHistoryService:
         if not records:
             return 0
         cutoff = _now_ms() - self.max_age_ms
-        last = self._last_recorded(project_key)
-        lines: list[str] = []
+        last_by_session: dict[str, tuple[str, str] | None] = {}
+        lines_by_session: dict[str, list[str]] = {}
         written = 0
         for record in records:
             if not isinstance(record, dict):
@@ -574,6 +615,9 @@ class ChatHistoryService:
             if ts < cutoff:
                 continue
             # Dedupe retries (same role+text); tool/thinking-only rows are kept.
+            meta = record.get("meta") if isinstance(record.get("meta"), dict) else {}
+            session_id = self._session_id(meta)
+            last = last_by_session.setdefault(session_id, self._last_recorded(project_key, session_id))
             if text and last == (role, text):
                 continue
             line: dict[str, Any] = {
@@ -586,43 +630,30 @@ class ChatHistoryService:
                 line["thinking"] = thinking
             if calls:
                 line["tool_calls"] = calls
-            meta = record.get("meta")
             if isinstance(meta, dict) and meta:
                 line["meta"] = meta
-            lines.append(json.dumps(line, ensure_ascii=False))
-            last = (role, text)
+            lines_by_session.setdefault(session_id, []).append(json.dumps(line, ensure_ascii=False))
+            last_by_session[session_id] = (role, text)
             written += 1
-        if not lines:
+        if not lines_by_session:
             return 0
         try:
-            with self._chat_file(project_key).open("a", encoding="utf-8") as fh:
-                fh.write("\n".join(lines) + "\n")
+            for session_id, lines in lines_by_session.items():
+                with self._chat_file(project_key, session_id).open("a", encoding="utf-8") as fh:
+                    fh.write("\n".join(lines) + "\n")
         except OSError as error:
             logger.warning("failed to import chat history: %s", error)
             return 0
-        self.prune(project_key)
         return written
 
     def session_ids(self, project_key: str) -> set[str]:
         """Imported session_ids (from meta.session_id) — used for idempotent scans."""
-        path = self._chat_file(project_key)
-        if not path.exists():
-            return set()
         ids: set[str] = set()
-        try:
-            with path.open(encoding="utf-8") as fh:
-                for raw in fh:
-                    if not raw.strip():
-                        continue
-                    try:
-                        row = json.loads(raw)
-                    except json.JSONDecodeError:
-                        continue
-                    meta = row.get("meta")
-                    if isinstance(meta, dict) and meta.get("session_id"):
-                        ids.add(str(meta["session_id"]))
-        except OSError:
-            return set()
+        for path in self._session_files(project_key):
+            for row in _read_jsonl(path):
+                meta = row.get("meta")
+                if isinstance(meta, dict) and meta.get("session_id"):
+                    ids.add(str(meta["session_id"]))
         return ids
 
     def imported_record_fingerprints(
@@ -638,26 +669,12 @@ class ChatHistoryService:
 
     def imported_session_fingerprints(self, project_key: str) -> dict[str, set[str]]:
         """Return imported fingerprints grouped by session in one file pass."""
-        path = self._chat_file(project_key)
-        if not path.exists():
-            return {}
         sessions: dict[str, set[str]] = {}
-        try:
-            with path.open(encoding="utf-8") as fh:
-                for raw in fh:
-                    try:
-                        row = json.loads(raw)
-                    except json.JSONDecodeError:
-                        continue
-                    meta = row.get("meta")
-                    if not isinstance(meta, dict) or not meta.get("session_id"):
-                        continue
-                    session_id = str(meta["session_id"])
-                    sessions.setdefault(session_id, set()).add(
-                        _import_record_fingerprint(row)
-                    )
-        except OSError:
-            return {}
+        for path in self._session_files(project_key):
+            for row in _read_jsonl(path):
+                meta = row.get("meta")
+                session_id = str(meta.get("session_id")) if isinstance(meta, dict) and meta.get("session_id") else path.stem
+                sessions.setdefault(session_id, set()).add(_import_record_fingerprint(row))
         return sessions
 
     def record_messages(
@@ -693,33 +710,20 @@ class ChatHistoryService:
         self,
         project_key: str,
         *,
+        session_id: str | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """Return the most recent rows of a project (within the retention window)."""
-        path = self._chat_file(project_key)
-        if not path.exists():
-            return []
+        """Return a conversation tail, or aggregate only for dashboard/import callers."""
         cutoff = _now_ms() - self.max_age_ms
-        rows: list[dict[str, Any]] = []
-        try:
-            with path.open(encoding="utf-8") as fh:
-                for raw in fh:
-                    if not raw.strip():
-                        continue
-                    try:
-                        row = json.loads(raw)
-                    except json.JSONDecodeError:
-                        continue
-                    if int(row.get("ts") or 0) >= cutoff:
-                        rows.append(row)
-        except OSError as error:
-            logger.warning("failed to read chat history: %s", error)
-            return []
-        return rows[-limit:]
+        if session_id is not None:
+            path = self._chat_file(project_key, session_id)
+            return [row for row in _tail_jsonl(path, limit) if int(row.get("ts") or 0) >= cutoff]
+        rows = self.messages(project_key, limit=1_000_000)
+        return [row for row in rows if int(row.get("ts") or 0) >= cutoff][-limit:]
 
-    def prune(self, project_key: str) -> None:
+    def prune(self, project_key: str, session_id: str = "gateway") -> None:
         """Remove rows older than max_age_days; delete the file if empty."""
-        path = self._chat_file(project_key)
+        path = self._chat_file(project_key, session_id)
         if not path.exists():
             return
         cutoff = _now_ms() - self.max_age_ms
@@ -750,28 +754,23 @@ class ChatHistoryService:
         project_key: str,
         question: str,
         *,
+        session_id: str = "gateway",
         max_chars: int | None = None,
     ) -> str | None:
         """Build the history context snippet to inject into the payload.
 
-        Only injected when the question hints at the past (do you remember / last
-        time / previously ...) OR history_inject_mode = "always". When the
-        question contains a specific keyword (e.g. "429"), prefer matching rows.
+        The current chat's bounded tail is always available. Other projects are
+        never read on this request path.
         """
         if self.settings.history_inject_mode == "off":
-            return None
-        rows = self.recent(project_key, limit=50)
-        if not rows:
             return None
 
         # `question` can be a str or a list of messages (routes pass body.messages
         # straight through) -> use the last user message as the question.
         question_text = _question_text(question)
         is_memory = bool(_MEMORY_RE.search(question_text))
-        if (
-            self.settings.history_inject_mode == "memory_only"
-            and not is_memory
-        ):
+        rows = self.recent(project_key, session_id=session_id, limit=50)
+        if not rows:
             return None
 
         # Filter by specific keywords appearing in the question (e.g. "429", "428").
@@ -819,6 +818,59 @@ class ChatHistoryService:
 # ----------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    """Read a transcript for dashboard/import work, never the chat hot path."""
+    rows: list[dict[str, Any]] = []
+    try:
+        with path.open(encoding="utf-8") as fh:
+            for raw in fh:
+                try:
+                    row = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(row, dict):
+                    rows.append(row)
+    except OSError as error:
+        logger.warning("failed to read chat history %s: %s", path, error)
+    return rows
+
+
+def _tail_jsonl(path: Path, limit: int) -> list[dict[str, Any]]:
+    """Read the final JSONL records using bounded reverse file reads.
+
+    A conversation can itself be large. Seeking from EOF avoids reparsing old
+    turns when only the last 50 are required for the next model request.
+    """
+    if limit < 1 or not path.exists():
+        return []
+    try:
+        with path.open("rb") as fh:
+            fh.seek(0, 2)
+            position = fh.tell()
+            chunks: list[bytes] = []
+            newlines = 0
+            while position > 0 and newlines <= limit + 1:
+                size = min(16_384, position)
+                position -= size
+                fh.seek(position)
+                chunk = fh.read(size)
+                chunks.append(chunk)
+                newlines += chunk.count(b"\n")
+    except OSError as error:
+        logger.warning("failed to tail chat history %s: %s", path, error)
+        return []
+    lines = b"".join(reversed(chunks)).splitlines()
+    rows: list[dict[str, Any]] = []
+    for raw in lines[-limit:]:
+        try:
+            row = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
 
 
 def inject_context(messages: list[dict[str, Any]], context: str) -> list[dict[str, Any]]:

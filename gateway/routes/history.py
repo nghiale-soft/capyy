@@ -76,6 +76,7 @@ async def get_history(
     page_limit = min(max(limit, 1), 1000)
     rows = service.messages(
         key,
+        session_id=session_id,
         # Filter a session before paging; otherwise a busy project's newest
         # messages could hide an older but selected conversation.
         limit=1_000_000 if session_id else page_limit,
@@ -83,10 +84,6 @@ async def get_history(
         newest_first_page=not session_id,
     )
     if session_id:
-        rows = [
-            row for row in rows
-            if str((row.get("meta") or {}).get("session_id") or "gateway") == session_id
-        ]
         rows = rows[-page_limit:]
     return {"project": key, "count": len(rows), "records": rows}
 

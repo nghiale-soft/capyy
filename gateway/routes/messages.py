@@ -132,6 +132,7 @@ async def anthropic_messages(
     lease = None
     chat_history = request.app.state.chat_history
     project_key = chat_history.resolve_project(request, anthropic_body)
+    session_id = getattr(chat_history, "resolve_session", lambda *_: "gateway")(request, anthropic_body)
     client_source = detect_client(request)
     logger.info(
         "anthropic client=%s ua=%s x-app=%s",
@@ -144,11 +145,12 @@ async def anthropic_messages(
         "client": client_source,
         "provider": provider_label(request, model),
         "via": "gateway",
+        "session_id": session_id,
     }
     chat_history.record_messages(
         project_key, messages, model=model, meta=_meta
     )
-    context = chat_history.build_context(project_key, anthropic_body.get("messages"))
+    context = chat_history.build_context(project_key, anthropic_body.get("messages"), session_id=session_id)
     injected = False
     if context:
         messages = inject_context(messages, context)
@@ -433,15 +435,17 @@ async def _generic_anthropic_messages(
     else:
         messages = list(body.get("messages") or [])
         project_key = chat_history.resolve_project(request, anthropic_body)
+        session_id = getattr(chat_history, "resolve_session", lambda *_: "gateway")(request, anthropic_body)
         client_source = detect_client(request)
         meta = {
             "source": "claude",
             "client": client_source,
             "provider": provider_id,
             "via": "gateway",
+            "session_id": session_id,
         }
         chat_history.record_messages(project_key, messages, model=model, meta=meta)
-        context = chat_history.build_context(project_key, anthropic_body.get("messages"))
+        context = chat_history.build_context(project_key, anthropic_body.get("messages"), session_id=session_id)
         injected = False
         if context:
             messages = inject_context(messages, context)

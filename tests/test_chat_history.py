@@ -39,7 +39,8 @@ class ChatHistoryTests(unittest.TestCase):
         self.assertEqual(rows[0]["role"], "user")
         self.assertEqual(rows[0]["content"], "xin chào")
         self.assertEqual(rows[1]["role"], "assistant")
-        self.assertIn("proj-a.jsonl", service._chat_file("proj-a").name)
+        self.assertEqual(service._chat_file("proj-a").name, "gateway.jsonl")
+        self.assertIn("projects/proj-a/sessions", str(service._chat_file("proj-a")))
 
     def test_record_messages_only_records_last_user(self):
         """Client gửi cả lịch sử mỗi request -> chỉ ghi message user cuối."""
@@ -66,6 +67,18 @@ class ChatHistoryTests(unittest.TestCase):
         service.record_messages("p", payload)
         rows = service.recent("p")
         self.assertEqual(len(rows), 1)
+
+    def test_current_session_context_is_isolated(self):
+        service = ChatHistoryService(_settings())
+        service.record("p", role="user", content="alpha private", meta={"session_id": "alpha"})
+        service.record("p", role="assistant", content="alpha answer", meta={"session_id": "alpha"})
+        service.record("p", role="user", content="beta private", meta={"session_id": "beta"})
+
+        ctx = service.build_context("p", "tiếp tục", session_id="beta")
+        self.assertIn("beta private", ctx)
+        self.assertNotIn("alpha private", ctx)
+        self.assertTrue(service._chat_file("p", "alpha").exists())
+        self.assertTrue(service._chat_file("p", "beta").exists())
 
     def test_build_context_with_messages_list_triggers(self):
         """Routes truyền body.messages (list dict) -> vẫn nhận diện memory."""
@@ -170,13 +183,13 @@ class ChatHistoryTests(unittest.TestCase):
         self.assertIsNotNone(ctx)
         self.assertIn("429", ctx)
 
-    def test_build_context_skips_plain_question_in_memory_only(self):
+    def test_build_context_keeps_current_session_in_memory_only(self):
         service = ChatHistoryService(_settings())
         service.record("p", role="user", content="giải thích code này")
         service.record("p", role="assistant", content="code này dùng để ...")
 
         ctx = service.build_context("p", "giải thích thêm đi")
-        self.assertIsNone(ctx)
+        self.assertIsNotNone(ctx)
 
     def test_build_context_always_mode_injects(self):
         service = ChatHistoryService(

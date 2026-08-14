@@ -253,7 +253,7 @@ Volumes are declared in `docker-compose.yml`, **no manual `-v` mounting**:
 ### Per-project chat history
 
 The gateway stores conversations (user/assistant) per project in
-`data/chat_history/chats/<project-key>.jsonl` and **remembers past
+`data/chat_history/projects/<project-key>/sessions/<session-id>.jsonl` and **remembers past
 conversations** when you ask questions like *"do you remember the 429 issue
 last time?"*:
 

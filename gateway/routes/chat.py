@@ -137,6 +137,7 @@ async def _freebuff_chat(request: Request, body: dict[str, Any], settings: Any) 
     lease = None
     chat_history = request.app.state.chat_history
     project_key = chat_history.resolve_project(request, body)
+    session_id = chat_history.resolve_session(request, body)
     client_source = detect_client(request)
     logger.info(
         "openai client=%s ua=%s x-title=%s",
@@ -149,11 +150,12 @@ async def _freebuff_chat(request: Request, body: dict[str, Any], settings: Any) 
         "client": client_source,
         "provider": provider_label(request, model),
         "via": "gateway",
+        "session_id": session_id,
     }
     chat_history.record_messages(
         project_key, messages, model=model, meta=_meta
     )
-    context = chat_history.build_context(project_key, body.get("messages"))
+    context = chat_history.build_context(project_key, body.get("messages"), session_id=session_id)
     injected = False
     if context:
         messages = inject_context(messages, context)

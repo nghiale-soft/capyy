@@ -55,7 +55,7 @@ class Settings:
     account_cooldown: float = 60.0
     # File storing account tokens configured through the dashboard (gitignored).
     tokens_file: str = "config/freebuff-tokens.json"
-    # Per-project chat history (JSONL). "always" injects history context into
+    # Per-project/per-session chat history (JSONL). "always" injects history context into
     # every request; "memory_only" injects only when the user asks about the
     # past (do you remember / last time / previously...); "off" disables it.
     history_dir: str = "data/chat_history"
