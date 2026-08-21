@@ -33,7 +33,23 @@ FREEBUFF_MODELS: tuple[FreebuffModel, ...] = (
     FreebuffModel("mimo/mimo-v2.5-pro", "base2-free-mimo-pro"),
 )
 
-DEFAULT_MODEL = FREEBUFF_MODELS[0]
+# FreeBuff's current user-selectable CLI picker.  This is deliberately kept
+# separate from ALL_MODELS: the latter preserves compatibility with older
+# requests and internal sub-agent routes, while this list is the only list the
+# dashboard may offer as a direct FreeBuff choice.
+_FREEBUFF_PICKER_MODEL_IDS = (
+    "deepseek/deepseek-v4-pro",
+    "deepseek/deepseek-v4-flash",
+    "openai/gpt-5.6-luna",
+    "minimax/minimax-m3",
+    "mimo/mimo-v2.5",
+)
+_FREEBUFF_MODELS_BY_ID = {model.id: model for model in FREEBUFF_MODELS}
+FREEBUFF_PICKER_MODELS: tuple[FreebuffModel, ...] = tuple(
+    _FREEBUFF_MODELS_BY_ID[model_id] for model_id in _FREEBUFF_PICKER_MODEL_IDS
+)
+
+DEFAULT_MODEL = next(m for m in FREEBUFF_MODELS if m.id == "mimo/mimo-v2.5")
 CONTEXT_PRUNER_AGENT_ID = "context-pruner"
 GEMINI_THINKER_AGENT_ID = "thinker-with-files-gemini"
 GEMINI_THINKER_PARENT_AGENT_ID = "base2-free-kimi"

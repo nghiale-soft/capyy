@@ -25,12 +25,14 @@ async def list_freebuff_models(
 ) -> dict[str, Any]:
     """FreeBuff model catalog for the provider form's model picker.
 
-    Uses ALL_MODELS (main catalog + gemini free models) so the picker matches
-    everything resolve_model() accepts.
+    This is intentionally the small, current FreeBuff picker catalog.  It is
+    not ALL_MODELS: that compatibility catalog also contains retired ids and
+    internal sub-agent routes that must never be offered as a direct provider
+    selection in the dashboard.
     """
-    from ..compat.models import ALL_MODELS
+    from ..compat.models import FREEBUFF_PICKER_MODELS
 
-    return {"models": [model.id for model in ALL_MODELS]}
+    return {"models": [model.id for model in FREEBUFF_PICKER_MODELS]}
 
 
 @router.get("/tokens")
@@ -45,9 +47,25 @@ async def get_tokens(
     each token so the UI can show/hide it with the eye toggle.
     """
     accounts = request.app.state.accounts
+    statuses = {
+        item["index"]: item
+        for item in accounts.token_statuses()
+    }
     tokens = []
     for i, t in enumerate(accounts.tokens):
-        entry: dict[str, Any] = {"index": i, "masked": _mask_token(t)}
+        entry: dict[str, Any] = {
+            "index": i,
+            "masked": _mask_token(t),
+            **statuses.get(
+                i,
+                {
+                    "status": "available",
+                    "is_default": False,
+                    "retry_at": None,
+                    "last_error_status": None,
+                },
+            ),
+        }
         if reveal:
             entry["value"] = t
         tokens.append(entry)

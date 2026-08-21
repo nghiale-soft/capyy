@@ -21,6 +21,15 @@
 3. Router selects the enabled provider with the lowest priority value. Before
    a stream emits its first chunk, `GatewayService` can try the next eligible
    OpenAI-compatible provider when the selected one fails.
+   For FreeBuff, a 401/403/429 before its first upstream chunk marks the active
+   token unavailable, releases its session/run, and retries the same request
+   with the next usable token. The API reports quota exhaustion only after the
+   token pool has no usable account; it never retries after output has started
+   because that could duplicate assistant content.
+   Each FreeBuff token/account has an exclusive active lease. Concurrent
+   requests use another idle healthy token when one exists; they wait when the
+   only healthy token is busy. Lower-priority providers are used after token
+   exhaustion/failure, not as load-balancing targets for busy healthy tokens.
 4. The provider returns a normal or streaming response. Compatibility code
    converts it to the client protocol. Native tool schemas and tool calls are
    preserved for OpenAI-compatible providers.

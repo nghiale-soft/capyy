@@ -215,6 +215,12 @@ class SessionService:
         """Tokens currently in use (pool order)."""
         return list(self._tokens)
 
+    def token_statuses(self) -> list[dict[str, Any]]:
+        """Dashboard-safe runtime state, aligned to ``tokens`` by index."""
+        if not self._tokens:
+            return []
+        return self.pool.public_account_statuses()[: len(self._tokens)]
+
     async def update_tokens(self, tokens: list[str]) -> list[str]:
         """Write tokens to the file and reload the pool (called from API/dashboard).
 

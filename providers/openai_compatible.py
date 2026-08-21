@@ -149,7 +149,9 @@ class OpenAICompatibleProvider(Provider):
                 headers=self._headers(),
                 timeout=10.0,
             )
-            return response.status_code < 500
+            # A dashboard "Test" must also reject invalid credentials, not
+            # merely prove that a remote server responded.
+            return response.status_code < 400
         except Exception:
             return False
 

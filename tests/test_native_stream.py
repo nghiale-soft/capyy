@@ -25,6 +25,23 @@ def _chunk(content: str) -> str:
     return f"data: {json.dumps(data)}"
 
 
+def _reasoning_chunk(reasoning: str) -> str:
+    data = {
+        "id": "chunk-reasoning",
+        "object": "chat.completion.chunk",
+        "created": 1,
+        "model": "deepseek/deepseek-v4-flash",
+        "choices": [
+            {
+                "index": 0,
+                "delta": {"reasoning_content": reasoning},
+                "finish_reason": None,
+            }
+        ],
+    }
+    return f"data: {json.dumps(data)}"
+
+
 class _ToolPassClient:
     """Fake upstream that emits a DSML bash tool call in one pass."""
 
@@ -53,6 +70,37 @@ class _FakeLease:
 
 
 class NativeToolStreamTests(unittest.IsolatedAsyncioTestCase):
+    async def test_private_compiler_reasoning_does_not_create_trailing_thought(self) -> None:
+        class FinalCompilerClient(_ToolPassClient):
+            async def chat_events(self, payload):
+                self.attempts += 1
+                if self.attempts == 1:
+                    yield _chunk("Task completed.")
+                else:
+                    yield _reasoning_chunk("PRIVATE COMPILER REASONING")
+                    yield _chunk('{"action":"final"}')
+                yield "data: [DONE]"
+
+        client = FinalCompilerClient()
+        settings = Settings(codebuff_token="token", local_api_key=None)
+        events: list[str] = []
+        async for raw in _stream_tool_loop_anthropic(
+            client,
+            {"model": "deepseek/deepseek-v4-flash", "messages": [{"role": "user", "content": "finish"}]},
+            body={"model": "deepseek/deepseek-v4-flash", "stream": True, "tools": [
+                {"name": "Read", "input_schema": {"type": "object"}}
+            ]},
+            settings=settings,
+            model="deepseek/deepseek-v4-flash",
+            requested_model="deepseek/deepseek-v4-flash",
+        ):
+            events.append(raw.decode("utf-8"))
+
+        self.assertEqual(client.attempts, 2)
+        rendered = "".join(events)
+        self.assertIn("Task completed.", rendered)
+        self.assertNotIn("PRIVATE COMPILER REASONING", rendered)
+
     async def test_unclassified_tool_response_creates_safe_contribution(self) -> None:
         class InvalidCompilerClient(_ToolPassClient):
             async def chat_events(self, payload):
@@ -162,6 +210,68 @@ class NativeToolStreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any('"name":"Read"' in event for event in events))
         self.assertEqual(client.attempts, 3)
         self.assertEqual(captured, [])
+
+    async def test_incomplete_action_leadin_rejects_compiler_final(self) -> None:
+        class IncompleteLeadInClient(_ToolPassClient):
+            async def chat_events(self, payload):
+                self.attempts += 1
+                if self.attempts == 1:
+                    yield _chunk("The previous edit did not match. Fixing:")
+                elif self.attempts == 2:
+                    yield _chunk('{"action":"final"}')
+                else:
+                    yield _chunk('{"action":"tool_call","name":"Read","arguments":{"file_path":"a.dart"}}')
+                yield "data: [DONE]"
+
+        client = IncompleteLeadInClient()
+        settings = Settings(codebuff_token="token", local_api_key=None)
+        events = []
+        async for raw in _stream_tool_loop_anthropic(
+            client,
+            {"model": "deepseek/deepseek-v4-flash", "messages": [{"role": "user", "content": "fix it"}]},
+            body={"model": "deepseek/deepseek-v4-flash", "stream": True, "tools": [
+                {"name": "Read", "input_schema": {"type": "object", "properties": {"file_path": {"type": "string"}}, "required": ["file_path"]}}
+            ]},
+            settings=settings,
+            model="deepseek/deepseek-v4-flash",
+            requested_model="deepseek/deepseek-v4-flash",
+        ):
+            events.append(raw.decode("utf-8"))
+
+        self.assertEqual(client.attempts, 3)
+        self.assertTrue(any('"name":"Read"' in event for event in events))
+
+    async def test_model_written_action_selected_is_repaired_and_not_rendered(self) -> None:
+        class ClaimedActionClient(_ToolPassClient):
+            async def chat_events(self, payload):
+                self.attempts += 1
+                if self.attempts == 1:
+                    yield _chunk("I have the file.\n✅ Action selected: Edit (apply the fix).")
+                elif self.attempts == 2:
+                    yield _chunk('{"action":"final"}')
+                else:
+                    yield _chunk('{"action":"tool_call","name":"Edit","arguments":{"file_path":"a.dart","old_string":"old","new_string":"new"}}')
+                yield "data: [DONE]"
+
+        client = ClaimedActionClient()
+        settings = Settings(codebuff_token="token", local_api_key=None)
+        events = []
+        async for raw in _stream_tool_loop_anthropic(
+            client,
+            {"model": "deepseek/deepseek-v4-flash", "messages": [{"role": "user", "content": "fix it"}]},
+            body={"model": "deepseek/deepseek-v4-flash", "stream": True, "tools": [
+                {"name": "Edit", "input_schema": {"type": "object", "properties": {"file_path": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"}}, "required": ["file_path", "old_string", "new_string"]}}
+            ]},
+            settings=settings,
+            model="deepseek/deepseek-v4-flash",
+            requested_model="deepseek/deepseek-v4-flash",
+        ):
+            events.append(raw.decode("utf-8"))
+
+        joined = "".join(events)
+        self.assertEqual(client.attempts, 3)
+        self.assertTrue(any('"name":"Edit"' in event for event in events))
+        self.assertNotIn("Action selected", joined)
 
     async def test_invalid_edit_schema_is_repaired_before_reaching_client(self) -> None:
         class InvalidEditThenRepairClient(_ToolPassClient):
@@ -360,10 +470,10 @@ class NativeToolStreamTests(unittest.IsolatedAsyncioTestCase):
 
         _FakeLease.closed = False
         event_types = []
+        status_delta_type = None
         # Tiny ping interval so the slow fake upstream triggers a heartbeat.
         with (
             mock.patch.object(messages_module, "STREAM_PING_SECONDS", 0.01),
-            mock.patch.object(messages_module, "STREAM_VISIBLE_PROGRESS_SECONDS", 0.01),
         ):
             async for raw in _stream_tool_loop_anthropic(
                 client,
@@ -379,14 +489,53 @@ class NativeToolStreamTests(unittest.IsolatedAsyncioTestCase):
                     (line for line in text.splitlines() if line.startswith("event: ")),
                     "",
                 )
+                data_line = next(
+                    (line for line in text.splitlines() if line.startswith("data: ")),
+                    "",
+                )
                 event_types.append(event_line.removeprefix("event: "))
-                if "Capyy is working on this" in text:
+                if "🔎 Analyzing the request" in text:
                     event_types.append("visible_progress")
+                    status_data = json.loads(data_line.removeprefix("data: "))
+                    status_delta_type = status_data["delta"]["type"]
 
         self.assertIn("ping", event_types)
         self.assertIn("visible_progress", event_types)
+        self.assertEqual(status_delta_type, "text_delta")
         self.assertEqual(event_types[0], "message_start")
         self.assertEqual(event_types[-1], "message_stop")
+
+    async def test_forwards_reasoning_once_before_final_answer(self) -> None:
+        class ReasoningClient(_ToolPassClient):
+            async def chat_events(self, payload):
+                self.attempts += 1
+                yield _reasoning_chunk("Reasoning trực tiếp.")
+                await asyncio.sleep(0.01)
+                yield _chunk("Câu trả lời cuối.")
+                yield "data: [DONE]"
+
+        client = ReasoningClient()
+        settings = Settings(codebuff_token="token", local_api_key=None)
+        payload = {
+            "model": "deepseek/deepseek-v4-flash",
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        body = {"model": "deepseek/deepseek-v4-flash", "messages": [], "stream": True, "tools": []}
+
+        events = []
+        async for raw in _stream_tool_loop_anthropic(
+            client,
+            payload,
+            body=body,
+            settings=settings,
+            model="deepseek/deepseek-v4-flash",
+            requested_model="deepseek/deepseek-v4-flash",
+        ):
+            events.append(raw.decode("utf-8"))
+
+        combined = "".join(events)
+        self.assertEqual(combined.count("Reasoning"), 1)
+        self.assertIn("Câu trả lời", combined)
 
     async def test_plain_answer_streams_without_tool_use(self) -> None:
         class PlainClient(_ToolPassClient):

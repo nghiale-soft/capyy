@@ -19,6 +19,36 @@ from providers.freebuff import FreebuffSession
 
 
 class ToolCallParsingTests(unittest.TestCase):
+    def test_client_tool_call_strips_all_json_batch_markers(self) -> None:
+        text = (
+            "Preparing a safe batch.\n"
+            '<<<TOOL_CALL>>>{"name":"read_file","arguments":{"path":"a.md"}}<<<END_TOOL_CALL>>>\n'
+            '<<<TOOL_CALL>>>{"name":"grep","arguments":{"pattern":"TODO","path":"."}}<<<END_TOOL_CALL>>>\n'
+            '<<<TOOL_CALL>>>{"name":"glob","arguments":{"pattern":"**/*.py"}}<<<END_TOOL_CALL>>>'
+        )
+
+        call, clean = client_tool_call(text)
+
+        self.assertEqual(call, {"name": "Read", "arguments": {"file_path": "a.md"}})
+        self.assertEqual(clean, "Preparing a safe batch.")
+        self.assertNotIn("<<<TOOL_CALL>>>", clean)
+        self.assertNotIn("<<<END_TOOL_CALL>>>", clean)
+
+    def test_client_tool_call_strips_closed_empty_private_envelope(self) -> None:
+        text = (
+            "Build is still running; wait for the app to launch.\n"
+            "<tool_call>\n<function_calls>\n\n</function_calls>\n</tool_call>"
+        )
+
+        call, clean = client_tool_call(text)
+
+        self.assertIsNone(call)
+        self.assertEqual(clean, "Build is still running; wait for the app to launch.")
+        self.assertNotIn("<tool_call>", clean)
+        self.assertNotIn("<function_calls>", clean)
+        from gateway.services.toolkit import has_incomplete_tool_invoke
+        self.assertFalse(has_incomplete_tool_invoke(text))
+
     def test_client_xml_edit_normalizes_gateway_path_to_file_path(self) -> None:
         call, _ = client_tool_call(
             '<invoke name="Edit"><parameter name="path">a.py</parameter>'

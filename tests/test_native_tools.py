@@ -7,6 +7,7 @@ from gateway.deps import detect_client
 from gateway.services.chat_service import (
     _compiler_execution_context,
     _compiler_task_context,
+    _wasted_read_paths,
     tool_history_to_text_protocol,
 )
 from gateway.services.toolkit import (
@@ -263,6 +264,29 @@ class ClientToolCallTests(unittest.TestCase):
 
 
 class ToolHistoryTextProtocolTests(unittest.TestCase):
+    def test_detects_unchanged_read_cache_hit_for_reuse_instruction(self) -> None:
+        messages = [
+            {"role": "assistant", "tool_calls": [{
+                "id": "read-1",
+                "function": {"name": "Read", "arguments": '{"file_path":"lib/item_task.dart"}'},
+            }]},
+            {"role": "tool", "tool_call_id": "read-1", "content": (
+                "Wasted call — file unchanged since your last Read. "
+                "Refer to that earlier tool_result instead."
+            )},
+        ]
+        self.assertEqual(_wasted_read_paths(messages), ["lib/item_task.dart"])
+
+    def test_ignores_other_read_failures(self) -> None:
+        messages = [
+            {"role": "assistant", "tool_calls": [{
+                "id": "read-1",
+                "function": {"name": "Read", "arguments": '{"file_path":"lib/item_task.dart"}'},
+            }]},
+            {"role": "tool", "tool_call_id": "read-1", "content": "File does not exist."},
+        ]
+        self.assertEqual(_wasted_read_paths(messages), [])
+
     def test_compiler_context_keeps_prior_tool_arguments_and_results(self) -> None:
         context = _compiler_execution_context([
             {"role": "assistant", "tool_calls": [{"id": "f1", "function": {"name": "mcp__plugin_figma_figma__get_metadata", "arguments": '{"fileKey":"abc","nodeId":"0:1"}'}}]},

@@ -122,15 +122,6 @@
                                 <button type="button" class="pw-toggle ms-icon" data-target="f_api_key" title="Show / hide">visibility</button>
                             </div>
                         </div>
-                        <div class="form-group full">
-                            <label>Model</label>
-                            <div class="model-fetch-row">
-                                <input id="f_model" list="modelOptions" placeholder="e.g. deepseek/deepseek-v4-flash" autocomplete="off">
-                                <datalist id="modelOptions"></datalist>
-                                <button type="button" class="btn btn-secondary" id="fetchModelsBtn" title="Fetch model list from the base URL"><span class="ms-icon">download</span>Fetch</button>
-                            </div>
-                            <p id="modelsHint" class="form-hint">One model per provider. Want another model? Create a new provider.</p>
-                        </div>
                     </div>
 
                     <div class="form-grid" style="margin-top:12px;">
@@ -159,6 +150,8 @@
                     </div>
 
                     <div class="form-actions">
+                        <span id="formTestState" class="form-test-state is-warning" title="Not tested. Test this provider configuration before saving."><span class="ms-icon">warning_amber</span></span>
+                        <button class="action-btn secondary-btn" id="testFormBtn" type="button"><span class="ms-icon">science</span>Test</button>
                         <button class="action-btn primary-btn" id="saveBtn">Save</button>
                         <button class="action-btn secondary-btn" id="cancelBtn">Cancel</button>
                     </div>
@@ -314,6 +307,8 @@
         let providers = [];
         let selectedId = null;
         let editingId = null;
+        let providerTokenPoll = null;
+        let formTestFingerprint = null;
 
         /* ---------- Views ---------- */
         function showView(name) {
@@ -327,6 +322,8 @@
             $('historyNav').classList.toggle('active', name === 'history');
             $('settingsNav').classList.toggle('active', name === 'settings');
             $('aboutNav').classList.toggle('active', name === 'about');
+            if (name === 'detail') startProviderTokenPolling();
+            else stopProviderTokenPolling();
         }
 
         /* ---------- Providers ---------- */
@@ -360,10 +357,6 @@
                 ? `<span class="ms-icon sm">terminal</span> command · ${esc(p.command || '-')}`
                 : `<span class="ms-icon sm">language</span> url · ${esc(p.type || '-')}`;
 
-            const models = (p.models || []).length
-                ? `<div class="detail-field full"><span class="f-label">Model</span>
-                     <div class="models-list">${p.models.map(m => `<span class="model-chip">${esc(m)}</span>`).join('')}</div></div>`
-                : '';
 
             // Token pool shown inline (masked chips + eye to reveal) for the freebuff provider.
             const tokenField = isFreebuff
@@ -386,7 +379,6 @@
                         ${tokenField}
                         <div class="detail-field"><span class="f-label">Enabled</span>
                             <span class="f-value">${p.enabled ? 'Yes' : 'No'}</span></div>
-                        ${models}
                     </div>
                     <div class="detail-actions">
                         <button class="btn btn-secondary" data-id="${esc(p.id)}" onclick="editFromList(this)"><span class="ms-icon">edit</span>Edit</button>
@@ -428,12 +420,21 @@
         }
 
         function tokenRowHTML(t, withRemove = false) {
+            const labels = {
+                available: 'Available', busy: 'Busy', rate_limited: 'Rate limited', error: 'Error',
+            };
+            const status = labels[t.status] || 'Available';
+            const detail = t.retry_at
+                ? ` · retry ${new Date(t.retry_at).toLocaleString()}`
+                : (t.last_error_status ? ` · HTTP ${t.last_error_status}` : '');
             const removeBtn = withRemove
                 ? `<button class="btn btn-danger token-remove" data-index="${t.index}" title="Remove"><span class="ms-icon">delete_outline</span></button>`
                 : '';
             return `
                 <div class="token-item" data-index="${t.index}">
                     <span class="token-chip" data-masked="${esc(t.masked)}">${esc(t.masked)}</span>
+                    <span class="token-runtime token-${esc(t.status || 'available')}" title="${esc(status + detail)}">${esc(status)}</span>
+                    ${t.is_default ? '<span class="token-default">Default</span>' : ''}
                     <span class="token-actions">
                         <button type="button" class="pw-toggle pw-toggle-sm token-eye ms-icon" title="Show / hide token">visibility</button>
                         ${removeBtn}
@@ -452,6 +453,18 @@
                         : '<span class="f-value mono">none yet</span>';
                 });
             } catch (e) { /* keep "…" */ }
+        }
+
+        function startProviderTokenPolling() {
+            stopProviderTokenPolling();
+            providerTokenPoll = window.setInterval(() => {
+                if (!document.hidden && location.hash.replace(/^#\/?/, '') === 'providers') loadProviderTokens();
+            }, 2000);
+        }
+
+        function stopProviderTokenPolling() {
+            if (providerTokenPoll !== null) window.clearInterval(providerTokenPoll);
+            providerTokenPoll = null;
         }
 
         // Eye toggle (event delegation): reveal / hide the real token value.
@@ -495,27 +508,11 @@
             $('f_command').closest('.form-group').style.display = isCmd ? '' : 'none';
             $('f_base_url').closest('.form-group').style.display = isCmd ? 'none' : '';
             $('f_api_key').closest('.form-group').style.display = isCmd ? 'none' : '';
-            // Model: URL providers always get a picker; FreeBuff gets the catalog;
-            // other CLI commands (claude/codex) choose their own model internally.
-            const showModel = !isCmd || isFreebuff;
-            $('f_model').closest('.form-group').style.display = showModel ? '' : 'none';
-            $('fetchModelsBtn').style.display = isCmd ? 'none' : '';
             $('freebuffTokenBox').classList.toggle('hidden', !isFreebuff);
             if (isFreebuff) {
                 loadTokensStatus();
-                populateFreebuffModels();
             }
             updateUrlPlaceholder();
-        }
-
-        async function populateFreebuffModels() {
-            try {
-                const resp = await fetch('/api/freebuff/models');
-                const data = await resp.json();
-                $('modelOptions').innerHTML = (data.models || [])
-                    .map(m => `<option value="${esc(m)}"></option>`).join('');
-                $('modelsHint').textContent = 'Pick one FreeBuff model.';
-            } catch (e) { /* keep manual entry */ }
         }
 
         function updateUrlPlaceholder() {
@@ -534,12 +531,12 @@
             $('f_base_url').value = cfg ? (cfg.base_url || '') : '';
             $('f_api_key').value = '';
             $('f_api_key').placeholder = cfg && cfg.api_key ? '(keep existing key — leave blank)' : 'Bearer token (empty for local)';
-            $('f_model').value = cfg && (cfg.models || []).length ? cfg.models[0] : '';
             $('f_enabled').checked = cfg ? cfg.enabled : true;
             $('formMsg').textContent = '';
             $('formMsg').className = 'form-error';
-            $('modelsHint').textContent = 'One model per provider. Want another model? Create a new provider.';
             $('tokensMsg').textContent = '';
+            formTestFingerprint = null;
+            setFormTestState('untested');
             syncSourceFields();
             updateUrlPlaceholder();
         }
@@ -547,6 +544,51 @@
         $('f_source').addEventListener('change', syncSourceFields);
         $('f_type').addEventListener('change', updateUrlPlaceholder);
         $('f_command').addEventListener('change', syncSourceFields);
+
+        function formPayload() {
+            const isCmd = $('f_source').value === 'command';
+            const name = $('f_name').value.trim();
+            return {
+                source: isCmd ? 'command' : 'url',
+                name,
+                id: editingId || slugify(name) || 'provider',
+                type: isCmd ? '' : $('f_type').value,
+                command: isCmd ? $('f_command').value : '',
+                base_url: isCmd ? '' : $('f_base_url').value.trim(),
+                api_key: isCmd ? '' : $('f_api_key').value.trim(),
+                enabled: $('f_enabled').checked,
+            };
+        }
+
+        function fingerprintPayload(payload) {
+            return JSON.stringify(payload);
+        }
+
+        function setFormTestState(status, message = '') {
+            const state = $('formTestState');
+            const values = {
+                untested: ['warning_amber', 'is-warning', 'Not tested. Test this provider configuration before saving.'],
+                testing: ['progress_activity', 'is-testing', 'Testing provider configuration…'],
+                passed: ['verified', 'is-passed', 'Connection test passed.'],
+                failed: ['error_outline', 'is-failed', message || 'Connection test failed.'],
+            };
+            const [icon, cls, title] = values[status];
+            state.className = `form-test-state ${cls}`;
+            state.title = title;
+            state.innerHTML = `<span class="ms-icon${status === 'testing' ? ' spin' : ''}">${icon}</span>`;
+        }
+
+        function invalidateFormTest() {
+            if (formTestFingerprint !== null) {
+                formTestFingerprint = null;
+                setFormTestState('untested');
+            }
+        }
+
+        ['f_name', 'f_source', 'f_type', 'f_command', 'f_base_url', 'f_api_key', 'f_enabled']
+            .forEach(id => $(id).addEventListener('input', invalidateFormTest));
+        ['f_source', 'f_type', 'f_command', 'f_enabled']
+            .forEach(id => $(id).addEventListener('change', invalidateFormTest));
 
         // Password visibility toggles (eye icon) for API key + token inputs.
         document.querySelectorAll('.pw-toggle').forEach(btn => {
@@ -567,63 +609,47 @@
         $('addBtn').addEventListener('click', () => showForm(null));
         $('cancelBtn').addEventListener('click', () => go('providers'));
 
-        $('fetchModelsBtn').addEventListener('click', async () => {
-            const base_url = $('f_base_url').value.trim();
-            const api_key = $('f_api_key').value.trim();
-            if (!base_url) {
-                $('modelsHint').textContent = 'Enter a base URL first, then click Fetch.';
-                $('modelsHint').className = 'form-hint error';
+        $('testFormBtn').addEventListener('click', async () => {
+            const payload = formPayload();
+            if (payload.source === 'url' && !payload.base_url) {
+                setFormTestState('failed', 'Enter a Base URL before testing.');
                 return;
             }
-            const btn = $('fetchModelsBtn');
+            const btn = $('testFormBtn');
             btn.disabled = true;
-            btn.innerHTML = '<span class="ms-icon spin">progress_activity</span>Fetching…';
-            $('modelsHint').className = 'form-hint';
-            $('modelsHint').textContent = 'Fetching models…';
+            btn.innerHTML = '<span class="ms-icon spin">progress_activity</span>Testing…';
+            setFormTestState('testing');
             try {
-                const resp = await fetch('/api/providers/fetch-models', {
+                const resp = await fetch('/api/providers/test-config', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ base_url, api_key, type: $('f_type').value }),
+                    body: JSON.stringify(payload),
                 });
                 const data = await resp.json();
-                if (!resp.ok) {
-                    $('modelsHint').textContent = (data.detail || 'Could not fetch — type the model manually.');
-                    $('modelsHint').className = 'form-hint error';
+                if (!resp.ok || !data.ok) {
+                    formTestFingerprint = null;
+                    setFormTestState('failed', data.detail || data.info || 'Connection test failed.');
                     return;
                 }
-                const models = data.models || [];
-                $('modelOptions').innerHTML = models.map(m => `<option value="${esc(m)}"></option>`).join('');
-                if (models.length) {
-                    $('f_model').value = models[0];
-                    $('modelsHint').textContent = `${models.length} models found. Pick one (${esc(models[0])}).`;
-                }
+                formTestFingerprint = fingerprintPayload(payload);
+                setFormTestState('passed', data.info);
             } catch (e) {
-                $('modelsHint').textContent = 'Error: ' + e.message + ' — type the model manually.';
-                $('modelsHint').className = 'form-hint error';
+                formTestFingerprint = null;
+                setFormTestState('failed', `Connection test failed: ${e.message}`);
             } finally {
                 btn.disabled = false;
-                btn.innerHTML = '<span class="ms-icon">download</span>Fetch';
+                btn.innerHTML = '<span class="ms-icon">science</span>Test';
             }
         });
 
         $('saveBtn').addEventListener('click', async () => {
-            const isCmd = $('f_source').value === 'command';
-            const name = $('f_name').value.trim();
+            const payload = formPayload();
+            const name = payload.name;
             if (!name) { $('formMsg').textContent = 'Name is required'; return; }
-            const model = $('f_model').value.trim();
-            const payload = {
-                source: isCmd ? 'command' : 'url',
-                name,
-                id: editingId || slugify(name) || 'provider',
-                type: isCmd ? '' : $('f_type').value,
-                command: isCmd ? $('f_command').value : '',
-                base_url: isCmd ? '' : $('f_base_url').value.trim(),
-                api_key: isCmd ? '' : $('f_api_key').value.trim(),
-                models: model ? [model] : [],
-                enabled: $('f_enabled').checked,
-            };
-            if (!isCmd && !payload.base_url) { $('formMsg').textContent = 'Base URL is required for URL providers'; return; }
+            if (formTestFingerprint !== fingerprintPayload(payload)) {
+                setFormTestState('untested');
+            }
+            if (payload.source === 'url' && !payload.base_url) { $('formMsg').textContent = 'Base URL is required for URL providers'; return; }
             try {
                 const url = editingId ? `/api/providers/${encodeURIComponent(editingId)}` : '/api/providers';
                 const method = editingId ? 'PUT' : 'POST';

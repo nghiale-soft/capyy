@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from typing import Any
@@ -23,12 +24,12 @@ from ..core.logging import log_curl, redact_headers, render_debug
 from ..core.sse import decode_sse_data
 from ..deps import check_local_auth, detect_client, get_settings, provider_label
 from ..services.chat_history import inject_context
+from ..failover import FreebuffDispatchFailover, has_next_provider, should_fallback_to_next_provider
 from ..services.chat_service import (
     _accumulate_assistant_parts,
     _log_assistant_marker_leak,
     _maybe_record_assistant,
     build_payload,
-    build_session_recover_callback,
     chat_events_with_recovery,
     collect_completion,
     new_assistant_state,
@@ -45,14 +46,120 @@ from providers.freebuff import CodebuffError
 # approval (Claude Code / Cline show their own approval UI). 15s keeps well
 # inside any proxy idle timeout while adding negligible overhead.
 STREAM_PING_SECONDS = 15.0
-# Claude Code intentionally ignores synthetic Anthropic thinking blocks (they
-# cannot carry an Anthropic signature).  A short, ordinary text status is the
-# only protocol-valid way to avoid an unexplained empty spinner.
-STREAM_VISIBLE_PROGRESS_SECONDS = 2.0
-
-
 router = APIRouter()
 logger = logging.getLogger("gateway.routes.messages")
+
+
+# --- Reusable helpers for emitting user-facing status/error notifications ---
+
+
+def _make_status_events(
+    state: Any,
+    requested_model: str,
+    kind: str,
+    text: str,
+) -> list[tuple[str, dict[str, Any]]]:
+    """Create Anthropic SSE content events showing a status message to the user.
+
+    Used by both ``_stream_tool_loop_anthropic`` and ``_stream_anthropic_chunks``
+    to surface human-readable error/status messages (e.g. session expired,
+    rate limited) directly in the chat thread.
+    """
+    delta = (
+        {"reasoning_content": text}
+        if kind == "reasoning"
+        else {"content": text}
+    )
+    progress_chunk = {
+        "id": f"chatcmpl-{uuid.uuid4().hex}",
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": requested_model,
+        "choices": [{
+            "index": 0,
+            "delta": delta,
+            "finish_reason": None,
+        }],
+    }
+    return openai_chunk_to_anthropic_events(progress_chunk, state)
+
+
+def _sse_status(state: Any, requested_model: str, text: str) -> list[bytes]:
+    """Shortcut: return already-encoded SSE bytes for a status message."""
+    return [
+        encode_anthropic_sse(ev, ev_data)
+        for ev, ev_data in _make_status_events(state, requested_model, "status", text)
+    ]
+
+
+# Map HTTP status codes to human-readable error labels for the user.
+_ERROR_LABELS: dict[int, str] = {
+    428: "⚠️ Freebuff session expired — recovery failed, retrying may help",
+    401: "⚠️ Authentication failed — provider credentials invalid",
+    403: "⚠️ Access denied — provider rejected the request",
+    429: "⚠️ Rate limited — all provider accounts exhausted",
+    500: "⚠️ Provider internal error — please retry",
+    502: "⚠️ Provider unavailable — upstream returned bad gateway",
+    503: "⚠️ Provider overloaded — service temporarily unavailable",
+}
+
+_TOOL_RESULT_SECRET_RE = re.compile(
+    r"(?i)\b(?:bearer\s+|sk-[a-z0-9_-]{8,}|api[_ -]?key\s*[:=]\s*)[^\s,;)}\]]+"
+)
+
+
+def _tool_result_text(content: Any) -> str:
+    """Return text-only tool-result content without serializing images/blobs."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(part.get("text") or "")
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+    return ""
+
+
+def _log_client_tool_results(body: dict[str, Any]) -> None:
+    """Log a compact, secret-redacted client tool result for support tracing.
+
+    Claude runs tools locally.  The gateway previously logged the generated
+    tool call but not its returned result, so client-side statuses such as
+    ``Wasted call`` could not be diagnosed.  Never log image data or a full
+    source-file result; the preview is redacted and capped.
+    """
+    messages = body.get("messages") if isinstance(body, dict) else None
+    if not isinstance(messages, list):
+        return
+    tool_names: dict[str, str] = {}
+    results: list[tuple[str, bool, str]] = []
+    for message in messages:
+        if not isinstance(message, dict) or not isinstance(message.get("content"), list):
+            continue
+        for block in message["content"]:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use":
+                tool_id = block.get("id")
+                tool_name = block.get("name")
+                if isinstance(tool_id, str) and isinstance(tool_name, str):
+                    tool_names[tool_id] = tool_name
+            elif block.get("type") == "tool_result":
+                tool_id = block.get("tool_use_id")
+                if isinstance(tool_id, str):
+                    results.append((tool_id, block.get("is_error") is True, _tool_result_text(block.get("content"))))
+    for tool_id, is_error, text in results[-8:]:
+        redacted = _TOOL_RESULT_SECRET_RE.sub("<redacted>", text)
+        preview = re.sub(r"\s+", " ", redacted).strip()[:240]
+        logger.info(
+            "anthropic client_tool_result tool=%s id=%s error=%s chars=%s preview=%r",
+            tool_names.get(tool_id, "unknown"),
+            tool_id[:16],
+            is_error,
+            len(text),
+            preview,
+        )
 
 
 def _contribution_reporter(request: Request) -> Any:
@@ -75,6 +182,7 @@ async def anthropic_messages(
     _: None = Depends(check_local_auth),
 ) -> Any:
     anthropic_body = await request.json()
+    _log_client_tool_results(anthropic_body)
     body = anthropic_request_to_openai(anthropic_body)
     log_curl(request, anthropic_body, logger=logger)
     settings = get_settings(request)
@@ -178,7 +286,7 @@ async def anthropic_messages(
         # chain. GatewayService skips the failed FreeBuff adapter and tries the
         # next OpenAI-compatible provider.
         if error.status_code in {401, 403, 429}:
-            if not gateway.has_generic_fallback("freebuff"):
+            if not has_next_provider(gateway):
                 _contribution_reporter(request)(
                     "provider",
                     "No fallback provider after Freebuff failure",
@@ -221,13 +329,16 @@ async def anthropic_messages(
         logger.exception("failed to prepare anthropic request")
         raise error
 
-    recover_payload = build_session_recover_callback(
-        lease,
-        model_config,
-        body,
-        messages,
-        settings,
-        run,
+    dispatch_failover = FreebuffDispatchFailover(
+        accounts=accounts,
+        model_config=model_config,
+        body=body,
+        messages=messages,
+        settings=settings,
+        lease=lease,
+        client=client,
+        run=run,
+        payload=payload,
     )
 
     def _on_assistant(parts: dict) -> None:
@@ -269,10 +380,18 @@ async def anthropic_messages(
                     on_rate_limited=lambda error: lease.mark_rate_limited(
                         settings.account_cooldown, error=error
                     ),
-                    recover=recover_payload,
+                    recover=dispatch_failover.recover_session,
                     on_assistant=_on_assistant,
                     on_contribution=contribution_reporter,
                     history_executor=lambda call: chat_history.execute_history_tool(call, project_key),
+                    dispatch_failover=dispatch_failover,
+                    fallback_stream=(
+                        lambda: gateway.stream_chat(
+                            "freebuff", {**body, "messages": messages}, real_model=body.get("model")
+                        )
+                        if has_next_provider(gateway)
+                        else None
+                    ),
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -289,16 +408,27 @@ async def anthropic_messages(
                 payload,
                 settings=settings,
                 model=model,
-                recover=recover_payload,
+                recover=dispatch_failover.recover_session,
                 debug=settings.debug,
                 log_body_chars=settings.log_body_chars,
                 client_tools=body.get("tools"),
                 on_contribution=contribution_reporter,
                 history_executor=lambda call: chat_history.execute_history_tool(call, project_key),
+                dispatch_failover=dispatch_failover,
             )
         except CodebuffError as error:
             if lease is not None and error.status_code in {401, 403, 429}:
                 lease.mark_rate_limited(settings.account_cooldown, error=error)
+            if should_fallback_to_next_provider(gateway, error):
+                logger.warning("freebuff token pool unavailable; trying next provider")
+                return await _generic_anthropic_messages(
+                    request,
+                    anthropic_body=anthropic_body,
+                    body=body,
+                    provider_id="freebuff",
+                    real_model=body.get("model"),
+                    history_context=(project_key, messages, _meta, injected),
+                )
             contribution_reporter(
                 "provider", "Freebuff tool pass failed",
                 "Freebuff could not complete a native client tool pass.",
@@ -312,8 +442,7 @@ async def anthropic_messages(
                 },
             )
         finally:
-            if lease is not None:
-                await lease.aclose()
+            await dispatch_failover.aclose()
         assert response is not None
         message = (response.get("choices") or [{}])[0].get("message") or {}
         _on_assistant(
@@ -351,10 +480,11 @@ async def anthropic_messages(
                 on_rate_limited=lambda error: lease.mark_rate_limited(
                     settings.account_cooldown, error=error
                 ),
-                recover=recover_payload,
+                recover=dispatch_failover.recover_session,
                 on_assistant=_on_assistant,
                 on_contribution=contribution_reporter,
                 history_executor=lambda call: chat_history.execute_history_tool(call, project_key),
+                dispatch_failover=dispatch_failover,
             ),
             media_type="text/event-stream",
             headers={
@@ -374,7 +504,8 @@ async def anthropic_messages(
             model,
             debug=settings.debug,
             log_body_chars=settings.log_body_chars,
-            recover=recover_payload,
+            recover=dispatch_failover.recover_session,
+            dispatch_failover=dispatch_failover,
         )
         message = (response.get("choices") or [{}])[0].get("message") or {}
         _on_assistant(
@@ -397,6 +528,16 @@ async def anthropic_messages(
     except CodebuffError as error:
         if lease is not None and error.status_code in {401, 403, 429}:
             lease.mark_rate_limited(settings.account_cooldown, error=error)
+        if should_fallback_to_next_provider(gateway, error):
+            logger.warning("freebuff token pool unavailable; trying next provider")
+            return await _generic_anthropic_messages(
+                request,
+                anthropic_body=anthropic_body,
+                body=body,
+                provider_id="freebuff",
+                real_model=body.get("model"),
+                history_context=(project_key, messages, _meta, injected),
+            )
         contribution_reporter(
             "provider", "Freebuff completion failed",
             "Freebuff could not complete a non-streaming response.",
@@ -410,8 +551,7 @@ async def anthropic_messages(
             },
         )
     finally:
-        if lease is not None:
-            await lease.aclose()
+        await dispatch_failover.aclose()
 
 
 async def _generic_anthropic_messages(
@@ -562,6 +702,7 @@ async def _stream_anthropic_chunks(
     account_lease: Any | None = None,
     on_rate_limited: Any = None,
     recover: Any | None = None,
+    dispatch_failover: FreebuffDispatchFailover | None = None,
     on_assistant: Any | None = None,
 ):
     message_id: str | None = None
@@ -572,7 +713,8 @@ async def _stream_anthropic_chunks(
         async for line in chat_events_with_recovery(
             client,
             payload,
-            recover=recover,
+            recover=dispatch_failover.recover_session if dispatch_failover else recover,
+            failover=dispatch_failover.failover if dispatch_failover else None,
             debug=debug,
         ):
             data = decode_sse_data(line)
@@ -594,7 +736,8 @@ async def _stream_anthropic_chunks(
         _log_assistant_marker_leak(assistant_state, "anthropic-stream")
         _maybe_record_assistant(on_assistant, assistant_state)
 
-        logger.info("anthropic stream phase=completed run_id=%s message_id=%s", run.run_id, message_id)
+        active_run = dispatch_failover.run if dispatch_failover else run
+        logger.info("anthropic stream phase=completed run_id=%s message_id=%s", active_run.run_id, message_id)
 
     except asyncio.CancelledError:
         logger.warning("anthropic stream phase=client_disconnected run_id=%s", run.run_id)
@@ -602,6 +745,9 @@ async def _stream_anthropic_chunks(
 
     except CodebuffError as error:
         logger.warning("anthropic stream failed run_id=%s: %s", run.run_id, error, exc_info=debug)
+        _label = _ERROR_LABELS.get(error.status_code, f"⚠️ Provider error (HTTP {error.status_code})")
+        for chunk in _sse_status(state, requested_model, _label):
+            yield chunk
         if error.status_code in {401, 403, 429} and on_rate_limited is not None:
             on_rate_limited(error)
         yield encode_anthropic_sse(
@@ -613,6 +759,8 @@ async def _stream_anthropic_chunks(
         )
     except Exception as error:
         logger.exception("anthropic stream failed run_id=%s", run.run_id)
+        for chunk in _sse_status(state, requested_model, f"⚠️ Unexpected gateway error — {type(error).__name__}: {error}"):
+            yield chunk
         yield encode_anthropic_sse(
             "error",
             {
@@ -621,9 +769,13 @@ async def _stream_anthropic_chunks(
             },
         )
     finally:
-        logger.info("anthropic stream phase=finalize run_id=%s message_id=%s", run.run_id, message_id)
-        schedule_finalize_run(client, run, message_id)
-        if account_lease is not None:
+        active_client = dispatch_failover.client if dispatch_failover else client
+        active_run = dispatch_failover.run if dispatch_failover else run
+        logger.info("anthropic stream phase=finalize run_id=%s message_id=%s", active_run.run_id, message_id)
+        schedule_finalize_run(active_client, active_run, message_id)
+        if dispatch_failover is not None:
+            await dispatch_failover.aclose()
+        elif account_lease is not None:
             await account_lease.aclose()
 
 
@@ -641,12 +793,15 @@ async def _stream_tool_loop_anthropic(
     on_assistant: Any | None = None,
     on_contribution: Any | None = None,
     history_executor: Any | None = None,
+    dispatch_failover: FreebuffDispatchFailover | None = None,
+    fallback_stream: Any | None = None,
 ):
     """Run ONE native tool pass and stream Anthropic SSE to the client.
 
-    - Emits ``message_start`` immediately, then a visible gateway status after
-      two seconds and ``ping`` heartbeats while the upstream pass runs. Claude
-      Code does not render unsigned synthetic thinking blocks.
+    - Emits ``message_start`` immediately, then forwards neutral gateway phases
+      and actual upstream reasoning into a collapsible Thinking block while the
+      upstream pass runs.  Those updates are never emitted as assistant text,
+      so they cannot leak into later conversation history.
     - If the model emitted a tool call, streams a native ``tool_use`` block and
       ends with ``stop_reason: tool_use`` — the client shows its own approval
       UI, runs the tool on the host and returns the result on the next request.
@@ -669,6 +824,27 @@ async def _stream_tool_loop_anthropic(
         logger.info("anthropic sse phase=emit event=%s block=%s", event, event_data.get("type"))
         yield encode_anthropic_sse(event, event_data)
 
+    progress: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
+
+    def progress_events(kind: str, update: str) -> list[tuple[str, dict[str, Any]]]:
+        delta = (
+            {"reasoning_content": update}
+            if kind == "reasoning"
+            else {"content": update}
+        )
+        progress_chunk = {
+            "id": f"chatcmpl-{uuid.uuid4().hex}",
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": requested_model,
+            "choices": [{
+                "index": 0,
+                "delta": delta,
+                "finish_reason": None,
+            }],
+        }
+        return openai_chunk_to_anthropic_events(progress_chunk, state)
+
     task = asyncio.create_task(
         run_tool_loop_pass(
             client,
@@ -681,37 +857,47 @@ async def _stream_tool_loop_anthropic(
             client_tools=body.get("tools"),
             on_contribution=on_contribution,
             history_executor=history_executor,
+            on_progress=lambda kind, text: progress.put_nowait((kind, text)),
+            dispatch_failover=dispatch_failover,
         )
     )
     logger.info("anthropic tool-pass phase=started model=%s", model)
-    started_at = time.monotonic()
-    progress_sent = False
+    streamed_thinking = False
+    last_ping_at = time.monotonic()
+    progress_wait = asyncio.create_task(progress.get())
     try:
         while True:
-            until_progress = max(0.0, STREAM_VISIBLE_PROGRESS_SECONDS - (time.monotonic() - started_at))
-            timeout = min(STREAM_PING_SECONDS, until_progress) if not progress_sent else STREAM_PING_SECONDS
-            done, _ = await asyncio.wait({task}, timeout=timeout)
-            if done:
-                break
-            if not progress_sent and time.monotonic() - started_at >= STREAM_VISIBLE_PROGRESS_SECONDS:
-                progress_sent = True
-                logger.info("anthropic tool-pass phase=visible_progress")
-                progress_chunk = {
-                    "id": f"chatcmpl-{uuid.uuid4().hex}",
-                    "object": "chat.completion.chunk",
-                    "created": int(time.time()),
-                    "model": requested_model,
-                    "choices": [{
-                        "index": 0,
-                        "delta": {"content": "⏳ Capyy is working on this…\n\n"},
-                        "finish_reason": None,
-                    }],
-                }
-                for event, event_data in openai_chunk_to_anthropic_events(progress_chunk, state):
+            remaining_ping = max(0.0, STREAM_PING_SECONDS - (time.monotonic() - last_ping_at))
+            done, _ = await asyncio.wait(
+                {task, progress_wait},
+                timeout=remaining_ping,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if progress_wait in done:
+                kind, update = progress_wait.result()
+                if kind == "status":
+                    logger.info("anthropic sse phase=gateway_status text=%s", update.strip())
+                for event, event_data in progress_events(kind, update):
                     yield encode_anthropic_sse(event, event_data)
+                streamed_thinking = streamed_thinking or kind == "reasoning"
+                progress_wait = asyncio.create_task(progress.get())
+            if done:
+                if task in done:
+                    break
             # Heartbeat so Claude Code / proxies keep the connection open while
             # the upstream pass (model thinking) is still running.
-            yield encode_anthropic_sse("ping", {"type": "ping"})
+            if time.monotonic() - last_ping_at >= STREAM_PING_SECONDS:
+                yield encode_anthropic_sse("ping", {"type": "ping"})
+                last_ping_at = time.monotonic()
+        if not progress_wait.done():
+            progress_wait.cancel()
+        while not progress.empty():
+            kind, update = progress.get_nowait()
+            if kind == "status":
+                logger.info("anthropic sse phase=gateway_status text=%s", update.strip())
+            for event, event_data in progress_events(kind, update):
+                yield encode_anthropic_sse(event, event_data)
+            streamed_thinking = streamed_thinking or kind == "reasoning"
         response, client_call = task.result()
         logger.info(
             "anthropic tool-pass phase=upstream_completed tool=%s",
@@ -722,7 +908,46 @@ async def _stream_tool_loop_anthropic(
         raise
     except CodebuffError as error:
         logger.warning("anthropic tool pass failed: %s", error, exc_info=settings.debug)
-        if error.status_code in {401, 403, 429} and on_rate_limited is not None:
+        _error_labels = {
+            428: "⚠️ Freebuff session expired — recovery failed, retrying may help",
+            401: "⚠️ Authentication failed — provider credentials invalid",
+            403: "⚠️ Access denied — provider rejected the request",
+            429: "⚠️ Rate limited — all provider accounts exhausted",
+            500: "⚠️ Provider internal error — please retry",
+            502: "⚠️ Provider unavailable — upstream returned bad gateway",
+            503: "⚠️ Provider overloaded — service temporarily unavailable",
+        }
+        _label = _error_labels.get(error.status_code, f"⚠️ Provider error (HTTP {error.status_code})")
+        for _ev, _ev_data in progress_events("status", _label):
+            yield encode_anthropic_sse(_ev, _ev_data)
+        if (
+            error.status_code in {401, 403, 429}
+            and fallback_stream is not None
+        ):
+            logger.warning("freebuff token pool unavailable; trying next provider")
+            for _ev, _ev_data in progress_events("status", "🔄 Trying fallback provider…"):
+                yield encode_anthropic_sse(_ev, _ev_data)
+            async for line in fallback_stream():
+                data = decode_sse_data(line)
+                if data is None:
+                    continue
+                if data == "[DONE]":
+                    for event, event_data in finish_anthropic_stream(state):
+                        yield encode_anthropic_sse(event, event_data)
+                    return
+                chunk = sanitize_stream_chunk(data)
+                if chunk is None:
+                    continue
+                for event, event_data in openai_chunk_to_anthropic_events(chunk, state):
+                    yield encode_anthropic_sse(event, event_data)
+            for event, event_data in finish_anthropic_stream(state):
+                yield encode_anthropic_sse(event, event_data)
+            return
+        if (
+            error.status_code in {401, 403, 429}
+            and dispatch_failover is None
+            and on_rate_limited is not None
+        ):
             on_rate_limited(error)
         yield encode_anthropic_sse(
             "error",
@@ -734,6 +959,8 @@ async def _stream_tool_loop_anthropic(
         return
     except Exception as error:
         logger.exception("anthropic tool pass failed")
+        for _ev, _ev_data in progress_events("status", f"⚠️ Unexpected gateway error — {type(error).__name__}: {error}"):
+            yield encode_anthropic_sse(_ev, _ev_data)
         yield encode_anthropic_sse(
             "error",
             {
@@ -743,11 +970,15 @@ async def _stream_tool_loop_anthropic(
         )
         return
     finally:
+        if not progress_wait.done():
+            progress_wait.cancel()
         # If the client disconnected mid-stream (generator cancelled), stop the
         # upstream pass so the account/lease is freed and the run is finalized.
         if not task.done():
             task.cancel()
-        if account_lease is not None:
+        if dispatch_failover is not None:
+            await dispatch_failover.aclose()
+        elif account_lease is not None:
             await account_lease.aclose()
         logger.info("anthropic tool-pass phase=lease_released task_done=%s", task.done())
 
@@ -772,7 +1003,9 @@ async def _stream_tool_loop_anthropic(
             logger.exception("failed to record anthropic tool pass assistant")
 
     delta: dict[str, Any] = {}
-    if message.get("reasoning_content"):
+    # Every reasoning chunk has already been sent in real time above.  Replaying
+    # the accumulated field here would duplicate the complete Thought block.
+    if message.get("reasoning_content") and not streamed_thinking:
         delta["reasoning_content"] = message["reasoning_content"]
     if message.get("content"):
         delta["content"] = message["content"]

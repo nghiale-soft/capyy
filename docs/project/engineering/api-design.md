@@ -23,7 +23,7 @@ endpoints can be called through either local service port when appropriate.
 
 | Area | Routes |
 |---|---|
-| Providers | `GET/POST /api/providers`, `GET/PUT/DELETE /api/providers/{provider_id}`, `POST /api/providers/fetch-models`, `PUT /api/providers/order`, `POST /api/providers/{provider_id}/test` |
+| Providers | `GET/POST /api/providers`, `GET/PUT/DELETE /api/providers/{provider_id}`, `POST /api/providers/fetch-models`, `POST /api/providers/test-config` (non-destructive connectivity test for unsaved form values; FreeBuff tests do not create a session), `PUT /api/providers/order`, `POST /api/providers/{provider_id}/test` |
 | FreeBuff | `GET /api/freebuff/models`; `GET/POST/PUT/DELETE /api/freebuff/tokens`; `DELETE /api/freebuff/tokens/{index}` |
 | Figma | `GET/POST/PUT/DELETE /api/figma/tokens`; `DELETE /api/figma/tokens/{index}` |
 | History | `GET /api/history`, `POST /api/history/scan`, `GET/DELETE /api/history/{project_key}` |

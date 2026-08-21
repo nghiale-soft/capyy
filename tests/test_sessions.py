@@ -1,5 +1,6 @@
 import asyncio
 import unittest
+from datetime import datetime
 from unittest.mock import patch
 
 from providers.freebuff import (
@@ -356,6 +357,21 @@ class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
                 await second.aclose()
                 await pool.aclose()
 
+    async def test_account_pool_exposes_redacted_runtime_status(self):
+        settings = Settings(codebuff_token="token-a,token-b", local_api_key=None)
+
+        with patch("providers.freebuff.CodebuffClient", PoolClient):
+            pool = CodebuffAccountPool(settings)
+            first = await pool.acquire_session("deepseek/deepseek-v4-flash")
+            self.assertEqual(pool.public_account_statuses()[0]["status"], "busy")
+            self.assertNotIn("token", pool.public_account_statuses()[0])
+            first.mark_rate_limited(60)
+            await first.aclose()
+            status = pool.public_account_statuses()[0]
+            self.assertEqual(status["status"], "rate_limited")
+            self.assertEqual(status["last_error_status"], 429)
+            await pool.aclose()
+
     async def test_account_pool_fails_over_when_session_creation_returns_429(self):
         settings = Settings(
             codebuff_token="token-a,token-b",
@@ -397,6 +413,29 @@ class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
             try:
                 with self.assertRaisesRegex(CodebuffError, "All Freebuff tokens"):
                     await pool.acquire_session("deepseek/deepseek-v4-flash")
+            finally:
+                await pool.aclose()
+
+    async def test_quota_error_uses_host_local_time_and_countdown(self):
+        settings = Settings(
+            codebuff_token="token-a",
+            local_api_key=None,
+            timezone="Europe/London",  # Must not affect user-facing time.
+        )
+
+        with patch("providers.freebuff.CodebuffClient", PoolClient), patch(
+            "providers.freebuff.time.time", return_value=1_715_000_000.0
+        ):
+            pool = CodebuffAccountPool(settings)
+            account = pool._accounts[0]
+            account.quota_reset_epoch = 1_715_009_150.0  # 2h 32m 30s later
+            account.reset_at = "2024-05-16T10:52:30.000Z"
+            try:
+                error = pool._all_accounts_rate_limited_error()
+                expected_local = datetime.fromtimestamp(1_715_009_150.0).astimezone()
+                self.assertIn(expected_local.strftime("GMT%z")[:-2] + ":" + expected_local.strftime("GMT%z")[-2:], str(error))
+                self.assertIn("(in 2h 32m)", str(error))
+                self.assertNotIn("(UTC)", str(error))
             finally:
                 await pool.aclose()
 

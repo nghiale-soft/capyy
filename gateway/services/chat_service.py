@@ -6,7 +6,7 @@ import logging
 import re
 import time
 import uuid
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
 from providers.freebuff import (
     CodebuffClient,
@@ -50,6 +50,31 @@ _RAW_LOG_SECRET_RE = re.compile(
 def _redact_raw_model_output(value: str) -> str:
     """Keep diagnostic text complete while never persisting credential values."""
     return _RAW_LOG_SECRET_RE.sub("<redacted-secret>", value)
+
+
+def _has_incomplete_action_tail(value: str) -> bool:
+    """Detect a structurally unfinished draft without guessing its language.
+
+    A compiler must not close a tool-enabled turn when the model leaves an
+    action lead-in such as ``Fixing:`` or an ellipsis.  This deliberately only
+    considers terminal punctuation, never Vietnamese/English keywords.
+    """
+    return bool(re.search(r"(?:[:：]|\.\.\.|…)\s*$", value or ""))
+
+
+_UNEXECUTED_ACTION_RE = re.compile(
+    r"(?im)^\s*(?:✅\s*)?action selected\s*:\s*[^\n]*(?:\n|$)"
+)
+
+
+def _has_unexecuted_action_claim(value: str) -> bool:
+    """A model-written gateway status is an unfinished, non-tool turn."""
+    return bool(_UNEXECUTED_ACTION_RE.search(value or ""))
+
+
+def _strip_unexecuted_action_claim(value: str) -> str:
+    """Never render a model's imitation of the gateway-only status line."""
+    return _UNEXECUTED_ACTION_RE.sub("", value or "").strip()
 
 
 async def start_freebuff_run_chain(
@@ -219,42 +244,159 @@ def schedule_finalize_run(
     task.add_done_callback(_log_background_error)
 
 
+class _LegacyFreebuffDispatchFailover:
+    """Own one Freebuff dispatch and replace it when its account is unavailable.
+
+    The route creates this after the initial session/run setup.  A chat 429 is
+    too late for ``CodebuffAccountPool.acquire_session`` to help by itself: the
+    original account has already been leased.  This object marks that account
+    unavailable, releases it, prepares a fresh session/run on the next account,
+    and retains the active resources for finalization.
+    """
+
+    def __init__(
+        self,
+        *,
+        accounts: Any,
+        model_config: FreebuffModel,
+        body: dict[str, Any],
+        messages: list[dict[str, Any]],
+        settings: Any,
+        lease: Any,
+        client: CodebuffClient,
+        run: FreebuffRun,
+        payload: dict[str, Any],
+    ) -> None:
+        self._accounts = accounts
+        self._model_config = model_config
+        self._body = body
+        self._messages = messages
+        self._settings = settings
+        self.lease = lease
+        self.client = client
+        self.run = run
+        self.payload = payload
+
+    @staticmethod
+    def _overlay_active_request(
+        fresh_payload: dict[str, Any], current_payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Keep tool/compiler context while replacing session/run metadata."""
+        merged = dict(fresh_payload)
+        for key in ("messages", "response_format", "temperature"):
+            if key in current_payload:
+                merged[key] = current_payload[key]
+        return merged
+
+    async def recover_session(self, current_payload: dict[str, Any]) -> dict[str, Any]:
+        """Refresh the active account for a 428 without changing accounts."""
+        session = await self.lease.refresh_session(self._model_config.session_id)
+        fresh_payload = build_payload(
+            {**self._body, "messages": self._messages},
+            session=session,
+            run=self.run,
+            client_id=self._settings.client_id,
+            upstream_model_id=self._model_config.upstream_id,
+            max_tokens_cap=self._settings.max_tokens,
+        )
+        self.payload = self._overlay_active_request(fresh_payload, current_payload)
+        return self.payload
+
+    async def failover(
+        self, error: CodebuffError, current_payload: dict[str, Any]
+    ) -> tuple[CodebuffClient, dict[str, Any]]:
+        """Switch accounts after a pre-output auth/quota failure.
+
+        ``acquire_session`` skips every account already marked unavailable. If
+        all tokens have been exhausted it raises its explicit all-tokens error,
+        which is propagated to the API response instead of retrying forever.
+        """
+        previous_lease = self.lease
+        previous_client = self.client
+        previous_run = self.run
+        previous_lease.mark_rate_limited(self._settings.account_cooldown, error=error)
+        await previous_lease.aclose()
+        schedule_finalize_run(previous_client, previous_run, None)
+
+        lease, client, run, fresh_payload = await prepare_freebuff_dispatch(
+            self._accounts,
+            self._model_config,
+            self._body,
+            self._messages,
+            self._settings,
+        )
+        self.lease = lease
+        self.client = client
+        self.run = run
+        self.payload = self._overlay_active_request(fresh_payload, current_payload)
+        logger.info(
+            "freebuff chat failover completed account=%s run_id=%s",
+            getattr(lease, "_account_index", "unknown"),
+            run.run_id,
+        )
+        return client, self.payload
+
+    async def aclose(self) -> None:
+        await self.lease.aclose()
+
+
 async def chat_events_with_recovery(
     client: CodebuffClient,
     payload: dict[str, Any],
     *,
     recover: Any | None = None,
+    failover: Any | None = None,
     debug: bool = False,
 ) -> AsyncIterator[str]:
-    """Yield upstream chat lines, recovering once from 428 waiting_room_required.
+    """Yield upstream chat lines with safe session and account recovery.
 
     When upstream reports that the freebuff session is no longer active, the
     `recover` callback (built by the route) refreshes the session and returns a
     rebuilt payload; the stream is then retried once with the fresh session.
-    Any other error, or a second 428, is re-raised as-is.
+    Before *any* upstream chunk is emitted, a 401/403/429 may instead invoke
+    `failover`, which switches to the next available Freebuff account and
+    rebuilds the complete dispatch.  Retrying after output has begun would
+    duplicate assistant content, so that case is deliberately not retried.
     """
-    attempts = 0
+    session_recovery_attempts = 0
     current_payload = payload
+    current_client = client
     while True:
+        emitted_upstream_chunk = False
         try:
-            async for line in client.chat_events(current_payload):
+            async for line in current_client.chat_events(current_payload):
+                emitted_upstream_chunk = True
                 yield line
             return
         except CodebuffError as error:
             if (
-                recover is None
-                or attempts >= 1
-                or not is_waiting_room_required(error)
+                failover is not None
+                and not emitted_upstream_chunk
+                and error.status_code in {401, 403, 429}
             ):
-                raise
-            attempts += 1
-            logger.warning(
-                "chat upstream waiting_room_required 428; refreshing freebuff "
-                "session and retrying: %s",
-                error,
-                exc_info=debug,
-            )
-            current_payload = await recover()
+                logger.warning(
+                    "chat upstream auth/quota failure before output; switching "
+                    "Freebuff account and retrying: %s",
+                    error,
+                    exc_info=debug,
+                )
+                current_client, current_payload = await failover(error, current_payload)
+                continue
+            if (
+                recover is not None
+                and session_recovery_attempts < 1
+                and is_waiting_room_required(error)
+            ):
+                session_recovery_attempts += 1
+                logger.warning(
+                    "chat upstream waiting_room_required 428; refreshing freebuff "
+                    "session and retrying: %s",
+                    error,
+                    exc_info=debug,
+                )
+                current_payload = await recover(current_payload)
+                continue
+            raise
 
 
 async def stream_openai_chunks(
@@ -267,6 +409,8 @@ async def stream_openai_chunks(
     account_lease: Any | None = None,
     on_rate_limited: Any = None,
     recover: Any | None = None,
+    dispatch_failover: FreebuffDispatchFailover | None = None,
+    fallback_stream: Any | None = None,
     on_assistant: Any | None = None,
 ) -> AsyncIterator[bytes]:
     message_id: str | None = None
@@ -275,7 +419,8 @@ async def stream_openai_chunks(
         async for line in chat_events_with_recovery(
             client,
             payload,
-            recover=recover,
+            recover=dispatch_failover.recover_session if dispatch_failover else recover,
+            failover=dispatch_failover.failover if dispatch_failover else None,
             debug=debug,
         ):
             data = decode_sse_data(line)
@@ -309,6 +454,11 @@ async def stream_openai_chunks(
             error,
             exc_info=debug,
         )
+        if error.status_code in {401, 403, 429} and fallback_stream is not None:
+            logger.warning("freebuff token pool unavailable before response; trying next provider: %s", error)
+            async for chunk in fallback_stream():
+                yield chunk
+            return
         if error.status_code in {401, 403, 429} and on_rate_limited is not None:
             on_rate_limited(error)
         yield encode_sse(
@@ -322,8 +472,12 @@ async def stream_openai_chunks(
         )
         yield encode_sse("[DONE]")
     finally:
-        schedule_finalize_run(client, run, message_id)
-        if account_lease is not None:
+        active_client = dispatch_failover.client if dispatch_failover else client
+        active_run = dispatch_failover.run if dispatch_failover else run
+        schedule_finalize_run(active_client, active_run, message_id)
+        if dispatch_failover is not None:
+            await dispatch_failover.aclose()
+        elif account_lease is not None:
             await account_lease.aclose()
 
 
@@ -336,6 +490,7 @@ async def collect_completion(
     debug: bool = False,
     log_body_chars: int = 2000,
     recover: Any | None = None,
+    dispatch_failover: FreebuffDispatchFailover | None = None,
 ) -> dict[str, Any]:
     message_id: str | None = None
     accumulator = CompletionAccumulator(model)
@@ -343,7 +498,8 @@ async def collect_completion(
         async for line in chat_events_with_recovery(
             client,
             payload,
-            recover=recover,
+            recover=dispatch_failover.recover_session if dispatch_failover else recover,
+            failover=dispatch_failover.failover if dispatch_failover else None,
             debug=debug,
         ):
             data = decode_sse_data(line)
@@ -363,7 +519,9 @@ async def collect_completion(
         )
         return response
     finally:
-        await finalize_run(client, run, message_id)
+        active_client = dispatch_failover.client if dispatch_failover else client
+        active_run = dispatch_failover.run if dispatch_failover else run
+        await finalize_run(active_client, active_run, message_id)
 
 
 def new_assistant_state() -> dict[str, Any]:
@@ -577,6 +735,47 @@ def tool_history_to_text_protocol(
     return result
 
 
+def _wasted_read_paths(messages: Any) -> list[str]:
+    """Return paths whose client Read result is an unchanged-file cache hit.
+
+    Claude Code returns ``Wasted call — file unchanged since your last Read``
+    rather than repeating a large file body.  That is a successful result, not
+    a failure to work around with ``Bash cat``.  The earlier Read output remains
+    in the same request transcript for the upstream model to use.
+    """
+    if not isinstance(messages, list):
+        return []
+    pending: dict[str, tuple[str, str]] = {}
+    paths: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") == "assistant":
+            for call in message.get("tool_calls") or []:
+                if not isinstance(call, dict):
+                    continue
+                function = call.get("function") or {}
+                if not isinstance(function, dict) or str(function.get("name") or "").lower() != "read":
+                    continue
+                raw_args = function.get("arguments") or "{}"
+                try:
+                    args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                except (TypeError, ValueError):
+                    args = {}
+                path = args.get("file_path") or args.get("path") if isinstance(args, dict) else None
+                call_id = call.get("id")
+                if isinstance(call_id, str) and isinstance(path, str) and path:
+                    pending[call_id] = ("Read", path)
+        elif message.get("role") == "tool":
+            tool_id = message.get("tool_call_id")
+            known = pending.get(tool_id) if isinstance(tool_id, str) else None
+            content = str(message.get("content") or "")
+            if known and "wasted call" in content.lower() and "unchanged since" in content.lower():
+                if known[1] not in paths:
+                    paths.append(known[1])
+    return paths
+
+
 def _compiler_execution_context(raw_messages: Any) -> str:
     """Keep recent client-executed tool state available to the private compiler.
 
@@ -653,6 +852,8 @@ async def run_tool_loop_pass(
     on_contribution: Any | None = None,
     history_executor: Any | None = None,
     history_depth: int = 0,
+    on_progress: Callable[[str, str], None] | None = None,
+    dispatch_failover: FreebuffDispatchFailover | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Run ONE upstream pass with the text-protocol tool prompt.
 
@@ -666,7 +867,19 @@ async def run_tool_loop_pass(
     Unlike the old local agent loop, tools are NOT executed here; the client
     (Claude Code / Cline) shows its own approval UI, runs the tool on the host
     and sends the result back on the next request.
+
+    ``on_progress`` receives either a neutral gateway ``status`` or actual
+    upstream ``reasoning``.  It never receives model answer text, tool
+    arguments, or host-path data.
     """
+    def report_progress(kind: str, text: str) -> None:
+        if on_progress is None or not text:
+            return
+        try:
+            on_progress(kind, text)
+        except Exception:
+            logger.exception("tool pass progress callback failed")
+
     tool_instructions = tool_system_prompt(
         settings.tool_workdir,
         bash_enabled=settings.tool_bash_enabled,
@@ -677,6 +890,14 @@ async def run_tool_loop_pass(
             "\n\nThe IDE client declared these executable tool names: "
             + ", ".join(client_tool_names)
             + ". Invoke ONLY one of those names. Do not use an alias that is not listed."
+        )
+    wasted_paths = _wasted_read_paths(payload.get("messages"))
+    if wasted_paths:
+        tool_instructions += (
+            "\n\nA client Read returned a successful unchanged-file cache hit for: "
+            + ", ".join(wasted_paths[:8])
+            + ". Its earlier Read output remains in this conversation. Reuse that output; "
+            "do NOT call Read, Bash cat/sed/grep, or another command merely to reread any of these files."
         )
     messages = tool_history_to_text_protocol(payload.get("messages") or [])
     execution_context = _compiler_execution_context(payload.get("messages"))
@@ -707,7 +928,7 @@ async def run_tool_loop_pass(
     ) -> tuple[
         CompletionAccumulator, str, str
     ]:
-        active_payload = dict(payload)
+        active_payload = dict(dispatch_failover.payload if dispatch_failover else payload)
         active_payload["messages"] = active_messages
         if compiler_mode:
             # This is an OpenAI structured-output field, not a native tool
@@ -716,10 +937,13 @@ async def run_tool_loop_pass(
             active_payload["response_format"] = {"type": "json_object"}
             active_payload["temperature"] = 0
 
-        async def _recover_with_context() -> dict[str, Any]:
-            if recover is None:
+        async def _recover_with_context(current_active_payload: dict[str, Any]) -> dict[str, Any]:
+            if dispatch_failover is not None:
+                fresh = await dispatch_failover.recover_session(current_active_payload)
+            elif recover is None:
                 return active_payload
-            fresh = await recover()
+            else:
+                fresh = await recover()
             if isinstance(fresh, dict):
                 fresh = dict(fresh)
                 fresh["messages"] = active_messages
@@ -729,13 +953,24 @@ async def run_tool_loop_pass(
                 return fresh
             return active_payload
 
+        phase_statuses = {
+            # Claude renders every status as a permanent timeline row; keep the
+            # main/compile transition as one useful status instead of two
+            # consecutive messages that describe the same work.
+            "main": "🔎 Analyzing the request and preparing the next action…\n\n",
+            "compiler_repair": "🔧 Checking the action format again…\n\n",
+            "schema_repair": "🧩 Checking the action parameters again…\n\n",
+        }
+        if phase != "compiler":
+            report_progress("status", phase_statuses.get(phase, "⏳ Processing…\n\n"))
         accumulator = CompletionAccumulator(model)
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
         async for line in chat_events_with_recovery(
-            client,
+            dispatch_failover.client if dispatch_failover else client,
             active_payload,
             recover=_recover_with_context,
+            failover=dispatch_failover.failover if dispatch_failover else None,
             debug=debug,
         ):
             data = decode_sse_data(line)
@@ -752,6 +987,12 @@ async def run_tool_loop_pass(
                 reasoning = delta.get("reasoning_content")
                 if isinstance(reasoning, str):
                     reasoning_parts.append(reasoning)
+                    # The compiler and repair passes are gateway-private
+                    # protocol conversion. Streaming their hidden chain of
+                    # thought after a user-facing answer creates a trailing
+                    # "Thought" that looks like the task is still running.
+                    if not compiler_mode:
+                        report_progress("reasoning", reasoning)
 
         collected_text = "".join(text_parts)
         collected_reasoning = "".join(reasoning_parts)
@@ -839,13 +1080,21 @@ async def run_tool_loop_pass(
         if compiled_call is None and not compiler_final:
             compiled_call, compiler_final = parse_compiler_protocol(compiler_reasoning)
         incomplete_marker = has_incomplete_tool_invoke(full_text) or has_incomplete_tool_invoke(full_reasoning)
-        if compiled_call is None and compiler_final and incomplete_marker:
-            # A bare internal marker means the upstream intended a tool turn.
-            # ``final`` from the first compiler pass is therefore invalid; let
-            # the existing one-shot repair recover a declared tool from the
-            # active request/tool state instead of immediately ending Claude.
+        incomplete_action_tail = _has_incomplete_action_tail(full_text) or _has_incomplete_action_tail(full_reasoning)
+        unexecuted_action_claim = _has_unexecuted_action_claim(full_text) or _has_unexecuted_action_claim(full_reasoning)
+        incomplete_turn = incomplete_marker or incomplete_action_tail or unexecuted_action_claim
+        if compiled_call is None and compiler_final and incomplete_turn:
+            # A bare internal marker or a terminal action lead-in means the
+            # upstream turn is unfinished. ``final`` from the first compiler
+            # pass is therefore invalid; let the existing one-shot repair
+            # recover a declared tool instead of immediately ending Claude.
             compiler_final = False
-            logger.warning("tool pass phase=compiler_final_rejected_incomplete_tool_marker")
+            logger.warning(
+                "tool pass phase=compiler_final_rejected_incomplete_turn marker=%s action_tail=%s action_claim=%s",
+                incomplete_marker,
+                incomplete_action_tail,
+                unexecuted_action_claim,
+            )
         if compiled_call is None and not compiler_final:
             # ``response_format=json_object`` is only best-effort on FreeBuff;
             # it is not native function calling.  Give the compiler exactly
@@ -861,11 +1110,11 @@ async def run_tool_loop_pass(
                 "Do not include prose, Markdown, reasoning, a plan, or a flat "
                 "object. Copy tool arguments only from the supplied task/context."
             )
-            if incomplete_marker:
+            if incomplete_turn:
                 repair_instruction = (
-                    "The upstream draft is an EMPTY internal tool wrapper, so action=final "
-                    "is invalid. Select the next declared tool with concrete arguments from "
-                    "the active task or recent tool state. Return ONLY the required JSON object."
+                    "The upstream draft is structurally unfinished, so action=final is invalid. "
+                    "Select the next declared tool with concrete arguments from the active task "
+                    "or recent tool state. Return ONLY the required JSON object."
                 )
             repair_messages = [
                 compiler_system,
@@ -890,9 +1139,9 @@ async def run_tool_loop_pass(
             repaired_call, repaired_final = parse_compiler_protocol(repair_text)
             if repaired_call is None and not repaired_final:
                 repaired_call, repaired_final = parse_compiler_protocol(repair_reasoning)
-            if repaired_call is None and repaired_final and incomplete_marker:
+            if repaired_call is None and repaired_final and incomplete_turn:
                 repaired_final = False
-                logger.warning("tool pass phase=compiler_repair_final_rejected_incomplete_tool_marker")
+                logger.warning("tool pass phase=compiler_repair_final_rejected_incomplete_turn")
             if repaired_call is not None or repaired_final:
                 compiler_accumulator = repair_accumulator
                 compiler_text = repair_text
@@ -950,7 +1199,7 @@ async def run_tool_loop_pass(
             _, clean_text = client_tool_call(full_text)
             if not clean_text:
                 _, clean_text = client_tool_call(full_reasoning)
-            fallback_text = (clean_text or "").strip()
+            fallback_text = _strip_unexecuted_action_claim(clean_text)
             if not fallback_text:
                 fallback_text = (full_text or "").strip()
             if fallback_text:
@@ -987,6 +1236,7 @@ async def run_tool_loop_pass(
     # reasoning channel. It is still a real tool call, but Claude would render
     # that channel as visible thinking unless we normalize it here too.
     call, clean_text = client_tool_call(full_text)
+    clean_text = _strip_unexecuted_action_claim(clean_text)
     if call is None and compiler_emitted_call:
         call, _ = parse_compiler_protocol(full_text)
         clean_text = ""
@@ -994,6 +1244,7 @@ async def run_tool_loop_pass(
     clean_reasoning = full_reasoning
     if call is None:
         call, clean_reasoning = client_tool_call(full_reasoning)
+        clean_reasoning = _strip_unexecuted_action_claim(clean_reasoning)
         if call is None and compiler_emitted_call:
             call, _ = parse_compiler_protocol(full_reasoning)
             clean_reasoning = ""
@@ -1046,6 +1297,8 @@ async def run_tool_loop_pass(
                 on_contribution=on_contribution,
                 history_executor=history_executor,
                 history_depth=history_depth + 1,
+                on_progress=on_progress,
+                dispatch_failover=dispatch_failover,
             )
         adapted_call = adapt_client_tool_call(call, client_tools)
         if adapted_call != call:
@@ -1179,13 +1432,23 @@ async def run_tool_loop_pass(
         response["choices"][0]["finish_reason"] = "tool_calls"
         return response, call
 
+    response = accumulator.final_response()
+    message = response["choices"][0]["message"]
+    # ``client_tool_call`` also removes closed, empty private envelopes such
+    # as <tool_call><function_calls></function_calls></tool_call>.  They are
+    # not executable calls and must never be rendered as assistant prose.
+    if clean_text != full_text:
+        message["content"] = clean_text or None
+    if clean_reasoning != full_reasoning:
+        message["reasoning_content"] = clean_reasoning or None
     if detect_tool_markers(full_text):
         logger.warning(
-            "tool pass FINAL ANSWER still contains markers — leaking to client; chars=%s body=%s",
+            "tool pass FINAL ANSWER contained private markers; cleaned=%s chars=%s body=%s",
+            clean_text != full_text,
             len(full_text),
             render_debug(full_text, log_body_chars),
         )
-    return accumulator.final_response(), None
+    return response, None
 
 
 def _tool_validation_code(reason: str) -> str:
@@ -1270,7 +1533,7 @@ async def run_tool_agent_loop(
         accumulator = CompletionAccumulator(model)
         text_parts: list[str] = []
 
-        async def _recover_with_context() -> dict[str, Any]:
+        async def _recover_with_context(_current_payload: dict[str, Any]) -> dict[str, Any]:
             # The route's recover refreshes the freebuff session and rebuilds the
             # payload from the ORIGINAL body. The tool loop has since mutated the
             # conversation (tool prompt + tool-result messages), so overlay the
@@ -1329,7 +1592,10 @@ async def run_tool_agent_loop(
                     iteration + 1,
                     len(full_text),
                 )
-            return accumulator.final_response()
+            response = accumulator.final_response()
+            if clean_text != full_text:
+                response["choices"][0]["message"]["content"] = clean_text or None
+            return response
         logger.info(
             "tool loop iteration=%s tool=%s args=%s clean_chars=%s",
             iteration + 1,
@@ -1397,6 +1663,8 @@ async def stream_tool_agent_loop(
     client_tools: Any | None = None,
     on_contribution: Any | None = None,
     history_executor: Any | None = None,
+    dispatch_failover: FreebuffDispatchFailover | None = None,
+    fallback_stream: Any | None = None,
 ) -> AsyncIterator[bytes]:
     """Run ONE native tool pass and stream OpenAI SSE to the client.
 
@@ -1418,6 +1686,7 @@ async def stream_tool_agent_loop(
             client_tools=client_tools,
             on_contribution=on_contribution,
             history_executor=history_executor,
+            dispatch_failover=dispatch_failover,
         )
     )
     try:
@@ -1428,7 +1697,22 @@ async def stream_tool_agent_loop(
             yield b": ping\n\n"
         response, client_call = task.result()
     except CodebuffError as error:
-        if error.status_code in {401, 403, 429} and account_lease is not None:
+        if (
+            error.status_code in {401, 403, 429}
+            and fallback_stream is not None
+        ):
+            logger.warning(
+                "freebuff token pool unavailable before response; trying next provider: %s",
+                error,
+            )
+            async for chunk in fallback_stream():
+                yield chunk
+            return
+        if (
+            error.status_code in {401, 403, 429}
+            and dispatch_failover is None
+            and account_lease is not None
+        ):
             account_lease.mark_rate_limited(settings.account_cooldown, error=error)
         yield encode_sse(
             {
@@ -1444,7 +1728,9 @@ async def stream_tool_agent_loop(
     finally:
         if not task.done():
             task.cancel()
-        if account_lease is not None:
+        if dispatch_failover is not None:
+            await dispatch_failover.aclose()
+        elif account_lease is not None:
             await account_lease.aclose()
 
     assert response is not None

@@ -68,6 +68,15 @@ class FreebuffTokenRoutesTests(unittest.TestCase):
             account_count = 1
             tokens = ["sk-secret-token-1234"]
 
+            def token_statuses(self):
+                return [{
+                    "index": 0,
+                    "status": "busy",
+                    "is_default": True,
+                    "retry_at": None,
+                    "last_error_status": None,
+                }]
+
         class _FakeRequest:
             app = type(
                 "App",
@@ -83,6 +92,8 @@ class FreebuffTokenRoutesTests(unittest.TestCase):
         hidden, revealed = asyncio.run(_run())
         self.assertEqual(hidden["configured"], True)
         self.assertNotIn("value", hidden["tokens"][0])
+        self.assertEqual(hidden["tokens"][0]["status"], "busy")
+        self.assertTrue(hidden["tokens"][0]["is_default"])
         self.assertEqual(revealed["tokens"][0]["value"], "sk-secret-token-1234")
 
 

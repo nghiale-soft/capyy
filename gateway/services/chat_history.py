@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -39,6 +40,19 @@ _MEMORY_PATTERNS = (
 
 _MEMORY_RE = re.compile("|".join(_MEMORY_PATTERNS), re.IGNORECASE)
 
+# Claude Code does not currently send a project header or metadata.cwd on every
+# extension request.  Its IDE context does contain the opened absolute file,
+# though.  Use that as a *fallback* identity only after explicit client
+# metadata has been considered.
+_IDE_OPEN_FILE_RE = re.compile(
+    r"<ide_opened_file\b[^>]*>.*?\bfile\s+(?P<path>/[^<\n]+?)\s+in\s+the\s+IDE\.",
+    re.IGNORECASE | re.DOTALL,
+)
+_WORKSPACE_ANCHORS = frozenset({
+    "lib", "src", "app", "apps", "backend", "docs", "example", "frontend",
+    "gateway", "test", "tests",
+})
+
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
@@ -46,6 +60,71 @@ def _now_ms() -> int:
 
 def _sanitize_filename(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("_") or "default"
+
+
+def _workspace_from_ide_context(body: dict[str, Any]) -> str | None:
+    """Infer a workspace root from Claude's ``ide_opened_file`` context.
+
+    The extension sends a file path, not a workspace root.  Walk its parents
+    until a conventional source directory is found (``lib/``, ``gateway/``,
+    etc.) and return the directory immediately above it.  This is deliberately
+    a fallback; explicit headers and metadata always win.
+    """
+    messages = body.get("messages") if isinstance(body, dict) else None
+    if not isinstance(messages, list):
+        return None
+    for message in reversed(messages):
+        if not isinstance(message, dict):
+            continue
+        text = _content_to_text(message.get("content"))
+        matches = list(_IDE_OPEN_FILE_RE.finditer(text))
+        if not matches:
+            continue
+        path = Path(matches[-1].group("path").strip())
+        parent = path.parent
+        candidates = (parent, *parent.parents)
+        # Prefer a repository-level marker over nested ``src/`` / ``test/``.
+        # For ``project/lib/src/a.dart`` this must resolve to ``project``, not
+        # ``project/lib``.
+        for candidate in candidates:
+            if candidate.name.lower() in {"lib", "apps", "backend", "frontend", "gateway"}:
+                return str(candidate.parent)
+        for candidate in candidates:
+            if candidate.name.lower() in _WORKSPACE_ANCHORS:
+                return str(candidate.parent)
+        return str(parent)
+    return None
+
+
+def _fallback_conversation_id(request: Any, body: dict[str, Any]) -> str | None:
+    """Derive a stable, non-secret Claude conversation id when none is sent.
+
+    It is intentionally limited to Claude/Codex-style clients.  Raw API calls
+    retain the historical ``gateway`` session fallback.  The digest is based
+    on the first meaningful user message, never on API credentials.
+    """
+    if request is None:
+        return None
+    headers = request.headers
+    client_hint = " ".join((
+        headers.get("user-agent") or "",
+        headers.get("x-app") or "",
+        headers.get("x-client") or "",
+    )).lower()
+    if not any(name in client_hint for name in ("claude", "codex", "cline", "cursor")):
+        return None
+    messages = body.get("messages") if isinstance(body, dict) else None
+    if not isinstance(messages, list):
+        return None
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        text = _clean_message_text(_content_to_text(message.get("content")))
+        if not text:
+            continue
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:20]
+        return f"client_{digest}"
+    return None
 
 
 # AI-tool wrapper blocks that pollute user messages (Claude Code, Codex, IDE
@@ -235,6 +314,8 @@ class ChatHistoryService:
                 )
 
         if not raw_path:
+            raw_path = _workspace_from_ide_context(body)
+        if not raw_path:
             return "default"
 
         key, metadata = self._identity_for_path(str(raw_path))
@@ -258,6 +339,9 @@ class ChatHistoryService:
                 value = metadata.get(key)
                 if value:
                     return _sanitize_filename(str(value))
+        inferred = _fallback_conversation_id(request, body)
+        if inferred:
+            return inferred
         return "gateway"
 
     def _register_project(self, key: str, metadata: dict[str, Any]) -> str:

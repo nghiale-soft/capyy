@@ -149,6 +149,35 @@ class ChatHistoryTests(unittest.TestCase):
         # không phải git repo -> key = tên folder
         self.assertEqual(key, "mydemo")
 
+    def test_resolve_project_uses_claude_opened_file_when_no_header(self):
+        service = ChatHistoryService(_settings())
+        body = {
+            "messages": [{
+                "role": "user",
+                "content": (
+                    "<ide_opened_file>The user opened the file "
+                    "/Users/me/work/qlcv/lib/src/item_task.dart in the IDE."
+                    "</ide_opened_file>\nKiểm tra widget này"
+                ),
+            }],
+        }
+        self.assertEqual(service.resolve_project(FakeRequest({"x-app": "cli"}), body), "qlcv")
+
+    def test_resolve_session_derives_stable_client_id_without_headers(self):
+        service = ChatHistoryService(_settings())
+        body = {"messages": [{"role": "user", "content": "kiểm tra widget này"}]}
+        request = FakeRequest({"user-agent": "claude-cli/2.1"})
+        session_one = service.resolve_session(request, body)
+        session_two = service.resolve_session(request, body)
+        self.assertEqual(session_one, session_two)
+        self.assertTrue(session_one.startswith("client_"))
+        self.assertNotIn("token", session_one)
+
+    def test_resolve_session_keeps_gateway_fallback_for_raw_api(self):
+        service = ChatHistoryService(_settings())
+        body = {"messages": [{"role": "user", "content": "kiểm tra widget này"}]}
+        self.assertEqual(service.resolve_session(FakeRequest(), body), "gateway")
+
     def test_resolve_project_git_remote_is_stable_across_rename(self):
         service = ChatHistoryService(_settings())
         tmp = Path(tempfile.mkdtemp(prefix="gitproj-"))

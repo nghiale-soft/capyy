@@ -89,6 +89,12 @@ class AlwaysWaitingRoomClient(FakeClient):
         yield
 
 
+class RateLimitedStreamClient(FakeClient):
+    async def chat_events(self, payload):
+        raise CodebuffError("Codebuff chat failed: 429 quota", 429)
+        yield
+
+
 class StreamingTests(unittest.IsolatedAsyncioTestCase):
     async def test_stream_forwards_content_before_finalize(self) -> None:
         client = FakeClient()
@@ -176,7 +182,7 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(run.payload_run_id, "run-2")
         self.assertEqual(
             client.calls[0],
-            ("start", "base2-free-deepseek-flash", [], "run-1"),
+            ("start", "base2-free-mimo", [], "run-1"),
         )
         self.assertEqual(
             client.calls[1],
@@ -240,7 +246,7 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
         client = WaitingRoomClient()
         recovered = {"called": 0, "payload": None}
 
-        async def _recover() -> dict:
+        async def _recover(_payload: dict) -> dict:
             recovered["called"] += 1
             recovered["payload"] = {
                 "codebuff_metadata": {"freebuff_instance_id": "instance-fresh"}
@@ -276,7 +282,7 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
         client = AlwaysWaitingRoomClient()
         recovered = {"called": 0}
 
-        async def _recover() -> dict:
+        async def _recover(_payload: dict) -> dict:
             recovered["called"] += 1
             return {"codebuff_metadata": {"freebuff_instance_id": "instance-fresh"}}
 
@@ -303,7 +309,7 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
     async def test_chat_events_with_recovery_reraises_non_428_errors(self) -> None:
         client = FailingStreamClient()
 
-        async def _recover() -> dict:
+        async def _recover(_payload: dict) -> dict:
             raise AssertionError("recover should not be called for non-428 errors")
 
         with self.assertRaises(CodebuffError):
@@ -313,6 +319,29 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
                 recover=_recover,
             ):
                 pass
+
+    async def test_chat_events_fails_over_before_any_upstream_output(self) -> None:
+        limited = RateLimitedStreamClient()
+        healthy = FakeClient()
+        retried = {"called": 0, "payload": None}
+
+        async def _failover(error: CodebuffError, payload: dict) -> tuple[FakeClient, dict]:
+            self.assertEqual(error.status_code, 429)
+            retried["called"] += 1
+            retried["payload"] = payload
+            return healthy, {"codebuff_metadata": {"freebuff_instance_id": "token-1"}}
+
+        lines = []
+        async for line in chat_events_with_recovery(
+            limited,
+            {"codebuff_metadata": {"freebuff_instance_id": "token-2"}},
+            failover=_failover,
+        ):
+            lines.append(line)
+
+        self.assertEqual(retried["called"], 1)
+        self.assertEqual(retried["payload"]["codebuff_metadata"]["freebuff_instance_id"], "token-2")
+        self.assertEqual(lines[-1], "data: [DONE]")
 
 
 if __name__ == "__main__":

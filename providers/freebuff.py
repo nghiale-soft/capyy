@@ -798,6 +798,8 @@ class CodebuffAccount:
     cooldown_until: float = 0.0
     reset_at: str | None = None
     quota_reset_epoch: float = 0.0
+    last_error_status: int | None = None
+    error_until: float = 0.0
 
 
 @dataclass
@@ -958,6 +960,8 @@ class CodebuffAccountPool:
             duration = error.retry_after_ms / 1000.0
         account = self._accounts[account_index]
         account.cooldown_until = time.monotonic() + duration
+        account.last_error_status = error.status_code if error is not None else 429
+        account.error_until = account.cooldown_until
         if error is not None and error.reset_at:
             account.reset_at = error.reset_at
             # Parse the upstream reset window into a wall-clock epoch once, so
@@ -998,6 +1002,45 @@ class CodebuffAccountPool:
                     return account_index
                 await self._condition.wait()
 
+    def public_account_statuses(self) -> list[dict[str, Any]]:
+        """Return dashboard-safe runtime state for each configured account.
+
+        This deliberately exposes no token material, session ids, or upstream
+        response bodies.  The state is a snapshot, so the dashboard can poll it
+        without affecting routing or reserving an account.
+        """
+        now_monotonic = time.monotonic()
+        now_epoch = time.time()
+        statuses: list[dict[str, Any]] = []
+        for index, account in enumerate(self._accounts):
+            retry_at: str | None = None
+            if account.quota_reset_epoch > now_epoch:
+                state = "rate_limited"
+                retry_at = account.reset_at
+            elif account.error_until > now_monotonic:
+                state = "rate_limited" if account.last_error_status == 429 else "error"
+                retry_at = datetime.fromtimestamp(
+                    now_epoch + max(0.0, account.error_until - now_monotonic),
+                    timezone.utc,
+                ).isoformat(timespec="seconds").replace("+00:00", "Z")
+            elif account.busy:
+                state = "busy"
+            else:
+                state = "available"
+
+            statuses.append(
+                {
+                    "index": index,
+                    "status": state,
+                    "is_default": index == self._default_index,
+                    "retry_at": retry_at,
+                    "last_error_status": account.last_error_status
+                    if state in {"rate_limited", "error"}
+                    else None,
+                }
+            )
+        return statuses
+
     def _next_available_index(self) -> int | None:
         account_count = len(self._accounts)
         # Prefer the sticky default for every normal request. A different
@@ -1030,10 +1073,10 @@ class CodebuffAccountPool:
             default=None,
         )
         if reset_account is not None:
-            when = reset_account.reset_at or f"in {int(reset_account.quota_reset_epoch - time.time())}s"
+            when = self._format_quota_refill(reset_account)
             message = (
                 f"All Freebuff tokens have exhausted their quota; the next refill is {when} "
-                "(UTC). Add another Freebuff token in Dashboard → Freebuff Tokens "
+                "in local gateway time. Add another Freebuff token in Dashboard → Freebuff Tokens "
                 "or configure a lower-priority provider."
             )
             return CodebuffError(message, 429, reset_at=reset_account.reset_at)
@@ -1042,6 +1085,20 @@ class CodebuffAccountPool:
             "Configure a lower-priority provider or retry shortly.",
             429,
         )
+
+    def _format_quota_refill(self, account: CodebuffAccount) -> str:
+        """Render an upstream UTC quota reset in the host machine's local timezone."""
+        remaining_seconds = max(0, int(account.quota_reset_epoch - time.time()))
+        remaining_minutes = remaining_seconds // 60
+        hours, minutes = divmod(remaining_minutes, 60)
+        countdown = f"in {hours}h {minutes}m"
+        # Docker receives the host's /etc/localtime through docker-compose.
+        # Do not use FREEBUFF_TIMEZONE here: it describes the upstream device
+        # fingerprint, while this user-facing message must reflect this machine.
+        local_reset = datetime.fromtimestamp(account.quota_reset_epoch).astimezone()
+        offset = local_reset.strftime("%z")
+        gmt_offset = f"GMT{offset[:3]}:{offset[3:]}" if offset else "GMT"
+        return f"{local_reset:%Y-%m-%d %H:%M} {gmt_offset} ({countdown})"
 
 
 def utc_now_iso() -> str:

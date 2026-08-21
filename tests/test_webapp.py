@@ -48,11 +48,14 @@ class WebappTests(unittest.TestCase):
         self.assertIn('id="historyNav"', resp.text)
         self.assertIn('id="settingsNav"', resp.text)
         self.assertIn('id="aboutNav"', resp.text)
-        # Provider form: source select + command select + single model + fetch + priority
+        # Provider form: source select + command select + priority; API callers choose models.
         self.assertIn('id="f_source"', resp.text)
         self.assertIn('id="f_command"', resp.text)
-        self.assertIn('id="f_model"', resp.text)
-        self.assertIn('id="fetchModelsBtn"', resp.text)
+        self.assertNotIn('id="f_test_model"', resp.text)
+        self.assertNotIn('id="modelOptions"', resp.text)
+        self.assertNotIn('id="fetchModelsBtn"', resp.text)
+        self.assertIn('id="testFormBtn"', resp.text)
+        self.assertIn('id="formTestState"', resp.text)
         self.assertIn('id="priorityBtn"', resp.text)
         self.assertNotIn('id="f_default"', resp.text)
         self.assertIn('figmaTokenSecrets = Array.isArray(data.tokens)', resp.text)

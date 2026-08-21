@@ -18,9 +18,9 @@ from ..deps import (
     provider_label,
 )
 from ..services.chat_history import inject_context
+from ..failover import FreebuffDispatchFailover, has_next_provider, should_fallback_to_next_provider
 from ..services.chat_service import (
     build_payload,
-    build_session_recover_callback,
     collect_completion,
     prepare_freebuff_dispatch,
     run_tool_loop_pass,
@@ -161,6 +161,41 @@ async def _freebuff_chat(request: Request, body: dict[str, Any], settings: Any) 
         messages = inject_context(messages, context)
         injected = True
         logger.info("injected chat history context project=%s chars=%s", project_key, len(context))
+
+    def _on_assistant(parts: dict) -> None:
+        chat_history.record(
+            project_key,
+            role="assistant",
+            content=parts.get("text") or "",
+            model=model,
+            thinking=parts.get("thinking") or "",
+            tool_calls=parts.get("tool_calls"),
+            meta=_meta,
+        )
+
+    async def _fallback_to_next_provider() -> Any:
+        try:
+            response = await gateway.chat(
+                "freebuff", {**body, "messages": messages}, real_model=body.get("model")
+            )
+        except Exception as fallback_error:
+            return error_response(fallback_error, request)
+        message = (response.get("choices") or [{}])[0].get("message") or {}
+        _on_assistant(
+            {
+                "text": message.get("content") or "",
+                "thinking": message.get("reasoning_content") or "",
+                "tool_calls": message.get("tool_calls") or [],
+            }
+        )
+        return JSONResponse(
+            response,
+            headers={
+                "X-History-Project": project_key,
+                "X-History-Injected": "1" if injected else "0",
+            },
+        )
+
     try:
         lease, client, run, payload = await prepare_freebuff_dispatch(
             accounts, model_config, body, messages, settings
@@ -181,27 +216,25 @@ async def _freebuff_chat(request: Request, body: dict[str, Any], settings: Any) 
             error,
             exc_info=settings.debug,
         )
+        if (
+            isinstance(error, CodebuffError)
+            and should_fallback_to_next_provider(gateway, error)
+        ):
+            logger.warning("freebuff token pool unavailable; trying next provider")
+            return await _fallback_to_next_provider()
         return error_response(error, request)
 
-    recover_payload = build_session_recover_callback(
-        lease,
-        model_config,
-        body,
-        messages,
-        settings,
-        run,
+    dispatch_failover = FreebuffDispatchFailover(
+        accounts=accounts,
+        model_config=model_config,
+        body=body,
+        messages=messages,
+        settings=settings,
+        lease=lease,
+        client=client,
+        run=run,
+        payload=payload,
     )
-
-    def _on_assistant(parts: dict) -> None:
-        chat_history.record(
-            project_key,
-            role="assistant",
-            content=parts.get("text") or "",
-            model=model,
-            thinking=parts.get("thinking") or "",
-            tool_calls=parts.get("tool_calls"),
-            meta=_meta,
-        )
 
     has_tools = bool(body.get("tools"))
     contribution_reporter = _contribution_reporter(request)
@@ -224,7 +257,7 @@ async def _freebuff_chat(request: Request, body: dict[str, Any], settings: Any) 
                     payload,
                     settings=settings,
                     model=model,
-                    recover=recover_payload,
+                    recover=dispatch_failover.recover_session,
                     debug=settings.debug,
                     log_body_chars=settings.log_body_chars,
                     client_tools=body.get("tools"),
@@ -232,6 +265,14 @@ async def _freebuff_chat(request: Request, body: dict[str, Any], settings: Any) 
                     history_executor=lambda call: chat_history.execute_history_tool(call, project_key),
                     account_lease=lease,
                     on_assistant=_on_assistant,
+                    dispatch_failover=dispatch_failover,
+                    fallback_stream=(
+                        lambda: gateway.stream_chat(
+                            "freebuff", {**body, "messages": messages}, real_model=body.get("model")
+                        )
+                        if has_next_provider(gateway)
+                        else None
+                    ),
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -248,12 +289,13 @@ async def _freebuff_chat(request: Request, body: dict[str, Any], settings: Any) 
                 payload,
                 settings=settings,
                 model=model,
-                recover=recover_payload,
+                recover=dispatch_failover.recover_session,
                 debug=settings.debug,
                 log_body_chars=settings.log_body_chars,
                 client_tools=body.get("tools"),
                 on_contribution=contribution_reporter,
                 history_executor=lambda call: chat_history.execute_history_tool(call, project_key),
+                dispatch_failover=dispatch_failover,
             )
         except Exception as error:
             if (
@@ -262,10 +304,15 @@ async def _freebuff_chat(request: Request, body: dict[str, Any], settings: Any) 
                 and error.status_code in {401, 403, 429}
             ):
                 lease.mark_rate_limited(settings.account_cooldown, error=error)
+            if (
+                isinstance(error, CodebuffError)
+                and should_fallback_to_next_provider(gateway, error)
+            ):
+                logger.warning("freebuff token pool unavailable; trying next provider")
+                return await _fallback_to_next_provider()
             return error_response(error, request)
         finally:
-            if lease is not None:
-                await lease.aclose()
+            await dispatch_failover.aclose()
         assert response is not None
         message = (response.get("choices") or [{}])[0].get("message") or {}
         _on_assistant(
@@ -295,8 +342,16 @@ async def _freebuff_chat(request: Request, body: dict[str, Any], settings: Any) 
                 on_rate_limited=lambda error: lease.mark_rate_limited(
                     settings.account_cooldown, error=error
                 ),
-                recover=recover_payload,
+                recover=dispatch_failover.recover_session,
                 on_assistant=_on_assistant,
+                dispatch_failover=dispatch_failover,
+                fallback_stream=(
+                    lambda: gateway.stream_chat(
+                        "freebuff", {**body, "messages": messages}, real_model=body.get("model")
+                    )
+                    if has_next_provider(gateway)
+                    else None
+                ),
             ),
             media_type="text/event-stream",
             headers={
@@ -316,7 +371,8 @@ async def _freebuff_chat(request: Request, body: dict[str, Any], settings: Any) 
             model,
             debug=settings.debug,
             log_body_chars=settings.log_body_chars,
-            recover=recover_payload,
+            recover=dispatch_failover.recover_session,
+            dispatch_failover=dispatch_failover,
         )
         message = (response.get("choices") or [{}])[0].get("message") or {}
         _on_assistant(
@@ -340,7 +396,12 @@ async def _freebuff_chat(request: Request, body: dict[str, Any], settings: Any) 
             and error.status_code in {401, 403, 429}
         ):
             lease.mark_rate_limited(settings.account_cooldown, error=error)
+        if (
+            isinstance(error, CodebuffError)
+            and should_fallback_to_next_provider(gateway, error)
+        ):
+            logger.warning("freebuff token pool unavailable; trying next provider")
+            return await _fallback_to_next_provider()
         return error_response(error, request)
     finally:
-        if lease is not None:
-            await lease.aclose()
+        await dispatch_failover.aclose()

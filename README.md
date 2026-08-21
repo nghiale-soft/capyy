@@ -35,6 +35,73 @@ to the right provider, with fallback when needed.
 The API listens on port `1221` by default. The management dashboard is served
 separately on port `2222`; see [Dashboard web](#dashboard-web-separate-port).
 
+## Quick start
+
+### Prerequisites
+
+- Docker Desktop (or Docker Engine with the Compose plugin)
+- A FreeBuff token or another OpenAI-compatible provider, configured after
+  startup from the Dashboard
+
+### Start with Docker
+
+```bash
+git clone https://github.com/nghiale-soft/capyy.git
+cd capyy
+
+# `gateway-data` is an existing external volume in the compose file. This is
+# a no-op when it already exists and preserves existing chat history.
+docker volume create gateway-data
+
+docker compose up -d --build
+docker compose ps
+curl -fsS http://localhost:1221/healthz
+```
+
+Open the Dashboard at <http://localhost:2222/> and add/configure providers.
+Provider credentials are entered there and stored in Docker volumes; do not
+put them in the repository or a committed `.env` file.
+
+### Use the API
+
+Configure a client with a Base URL of `http://localhost:1221`, any non-empty
+API key accepted by your client, and the model it wants to request. The client
+selects the model per request; provider priority and failover are managed by
+Capyy.
+
+```bash
+curl http://localhost:1221/v1/models
+
+curl http://localhost:1221/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer local-key' \
+  -d '{
+    "model": "deepseek/deepseek-v4-flash",
+    "messages": [{"role": "user", "content": "Hello"}]
+  }'
+```
+
+### Operate and update
+
+```bash
+# Follow gateway logs
+docker compose logs -f capyy
+
+# Rebuild after a source update, then replace the running container
+docker compose up -d --build --force-recreate
+
+# Stop containers but keep provider settings and chat history
+docker compose down
+
+# Destructive: remove containers and named volumes, including history/tokens
+docker compose down -v
+```
+
+If `curl /healthz` succeeds but a chat request fails, open **Dashboard →
+Providers** to inspect provider/token state and test connectivity. Capyy tries
+enabled providers in priority order; a FreeBuff provider tries its healthy
+tokens before failing over to the next provider.
+
 ## Community contributions
 
 When Capyy identifies a repairable problem, Dashboard → Settings can show a
@@ -106,6 +173,12 @@ Currently only an abstraction; not yet AI-integrated.
   The gateway builds an account pool and when an account gets a 429 from upstream
   (`free-models-per-day-high-balance`) it automatically **cooldowns** that
   account and switches to another one.
+  Each account owns one active upstream session/run at a time: concurrent
+  requests borrow the next *idle* healthy account rather than sharing a
+  session. A lower-priority provider is a resilience fallback only; it is not
+  used for load balancing while this provider still has a healthy-but-busy
+  account. When only one account remains healthy, later requests wait for that
+  account's lease to be released.
 - `FREEBUFF_MAX_TOKENS=8192` — cap `max_tokens` within the daily quota (Claude
   Code asks for 32000 by default, which often triggers 429). `0` = no cap.
 - `FREEBUFF_RETRY_ATTEMPTS=4`, `FREEBUFF_RETRY_BASE_DELAY=1.0`,
@@ -227,10 +300,11 @@ tools (read_file/list_dir/glob/grep) = Allow; write_file and bash = Ask.
   secrets leak into HTML.
 - Docker: publish `-p 2222:2222`.
 
-### Docker Compose (auto-mount, no manual steps)
+### Docker Compose
 
 ```bash
-cd capyy
+# Create once for a fresh install; it is a no-op when the volume exists.
+docker volume create gateway-data
 docker compose up -d --build
 ```
 

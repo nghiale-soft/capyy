@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from ..deps import check_local_auth, get_settings
 from ..services.provider_crud import ProviderConfig, ProviderCrudService
+from providers.openai_compatible import OpenAICompatibleProvider
 
 
 router = APIRouter(prefix="/api/providers", tags=["providers"])
@@ -93,6 +94,53 @@ async def fetch_models(
     if not ids:
         raise HTTPException(status_code=400, detail="No models returned by the API. Enter them manually.")
     return {"models": ids}
+
+
+@router.post("/test-config")
+async def test_provider_config(
+    request: Request,
+    body: dict[str, Any],
+    _: None = Depends(check_local_auth),
+) -> dict[str, Any]:
+    """Test the provider values currently entered in the form without saving.
+
+    The dashboard test is a non-destructive connectivity check. It verifies
+    that the configured endpoint (or FreeBuff service) is reachable without
+    starting a model session, consuming quota, or changing an active session.
+    Command providers other than FreeBuff do not have an executor in Capyy, so
+    pretending to test them would be misleading.
+    """
+    cfg = _body_to_config(body, str(body.get("id") or "provider-test"))
+    if cfg.source == "command":
+        if cfg.command != "freebuff":
+            return {
+                "ok": False,
+                "info": f"Local command '{cfg.command}' cannot be tested because Capyy has no command runner.",
+            }
+        try:
+            await request.app.state.accounts.default_client.health()
+        except Exception as error:
+            logger.info("FreeBuff connection test failed: %s", error)
+            return {"ok": False, "info": f"FreeBuff connection test failed: {error}"}
+        return {"ok": True, "info": "FreeBuff service is reachable."}
+
+    if not cfg.base_url:
+        raise HTTPException(status_code=400, detail="base_url is required")
+
+    provider = OpenAICompatibleProvider(
+        "provider-test",
+        base_url=cfg.base_url,
+        api_key=cfg.api_key,
+        models=cfg.models,
+    )
+    try:
+        ok = await provider.health()
+    finally:
+        await provider.aclose()
+    return {
+        "ok": ok,
+        "info": "Provider connection and credentials verified." if ok else "Provider rejected the connection or credentials.",
+    }
 
 
 @router.put("/order")

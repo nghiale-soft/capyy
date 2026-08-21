@@ -80,8 +80,24 @@ _DSML_FRAGMENT_RE = re.compile(
 # ``<tool_invoke_edit>``. It is not Claude XML and contains no arguments, so
 # treating it as a final answer would leave the client visibly stuck.
 _TOOL_INVOKE_WRAPPER_RE = re.compile(
-    r"</?(?:tool_invoke(?:_[a-z0-9_\-]+)?|function_calls)\s*>", re.IGNORECASE
+    r"</?(?:tool_call|tool_invoke(?:_[a-z0-9_\-]+)?|function_calls)\s*>", re.IGNORECASE
 )
+
+# Some providers emit an empty private envelope after an otherwise useful
+# answer.  It is neither a tool request nor user-facing text.  Keep this
+# deliberately structural and only remove a *closed, empty* envelope: a real
+# nested ``<invoke ...>`` remains available to the normal parsers.
+_EMPTY_PRIVATE_TOOL_ENVELOPE_RE = re.compile(
+    r"<(?:tool_call|tool_invoke(?:_[a-z0-9_\-]+)?)\s*>\s*"
+    r"<function_calls\s*>\s*</function_calls\s*>\s*"
+    r"</(?:tool_call|tool_invoke(?:_[a-z0-9_\-]+)?)\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def strip_empty_private_tool_envelopes(text: str) -> str:
+    """Remove only closed private tool wrappers with no invocation inside."""
+    return _EMPTY_PRIVATE_TOOL_ENVELOPE_RE.sub("", text or "").strip()
 
 
 def detect_tool_markers(text: str) -> list[str]:
@@ -112,6 +128,15 @@ def has_incomplete_tool_invoke(text: str) -> bool:
     call and must never reach the IDE as ordinary assistant text.
     """
     value = text or ""
+    # A closed, empty envelope is provider debris, not an incomplete action.
+    # Do not trigger a compiler/retry pass for it; it is simply stripped from
+    # the final assistant text below.
+    if re.search(
+        r"<tool_call\s*>\s*<function_calls\s*>\s*</function_calls\s*>\s*</tool_call\s*>",
+        value,
+        re.IGNORECASE | re.DOTALL,
+    ):
+        return False
     return bool(_TOOL_INVOKE_WRAPPER_RE.search(value)) and not bool(_INVOKE_RE.search(value))
 
 
@@ -241,7 +266,7 @@ def parse_tool_call(text: str) -> tuple[dict[str, Any] | None, str]:
     if dsml_clean != text:
         # Stray DSML markers were stripped (open tag with no usable block).
         return None, dsml_clean
-    return None, text
+    return None, strip_empty_private_tool_envelopes(text)
 
 
 # Built-in aliases are a safe fallback only.  The versioned config file is the
@@ -503,7 +528,11 @@ def client_tool_call(text: str) -> tuple[dict[str, Any] | None, str]:
     3. manicode DSML ``<｜DSML｜invoke name="Edit">`` — same.
 
     Returns ``(call, clean_text)`` where ``call`` is ``{"name", "arguments"}``
-    or ``None``, and ``clean_text`` is the model text with the tool call removed.
+    or ``None``, and ``clean_text`` is the model text with every complete
+    gateway JSON tool-call marker removed.  Models sometimes send a batch of
+    calls in one turn; this gateway returns one native client call per turn,
+    but must never leak the remaining private protocol markers into visible
+    assistant content or reasoning.
     """
     text = text or ""
     match = TOOL_CALL_RE.search(text)
@@ -519,7 +548,10 @@ def client_tool_call(text: str) -> tuple[dict[str, Any] | None, str]:
             arguments = call.get("arguments")
             if not isinstance(arguments, dict):
                 arguments = {}
-            clean = (text[: match.start()] + text[match.end():]).strip()
+            # Keep ordinary narration, but remove every complete private tool
+            # envelope from the client-visible response.  Leaving later batch
+            # entries here made Claude render `<<<TOOL_CALL>>>` as prose.
+            clean = TOOL_CALL_RE.sub("", text).strip()
             return _as_client_tool_call(name, arguments), clean
 
     xml_call, xml_clean = _parse_client_xml(text)
@@ -531,7 +563,7 @@ def client_tool_call(text: str) -> tuple[dict[str, Any] | None, str]:
         return dsml_call, dsml_clean
     if dsml_clean != text:
         return None, dsml_clean
-    return None, text
+    return None, strip_empty_private_tool_envelopes(text)
 
 
 def validate_client_tool_call(

@@ -280,14 +280,60 @@ class RegistryCommandSkipTests(unittest.TestCase):
 
 class FreebuffCatalogRouteTests(unittest.TestCase):
     def test_list_freebuff_models_returns_catalog(self) -> None:
-        from gateway.compat.models import ALL_MODELS
+        from gateway.compat.models import FREEBUFF_PICKER_MODELS
         from gateway.routes.freebuff import list_freebuff_models
 
         result = _run(list_freebuff_models(None))
-        self.assertEqual(result["models"], [m.id for m in ALL_MODELS])
+        self.assertEqual(result["models"], [m.id for m in FREEBUFF_PICKER_MODELS])
         self.assertIn("deepseek/deepseek-v4-flash", result["models"])
-        self.assertIn("google/gemini-2.5-flash-lite", result["models"])
-        self.assertEqual(len(result["models"]), len(ALL_MODELS))
+        self.assertNotIn("mimo/mimo-v2.5-pro", result["models"])
+        self.assertNotIn("google/gemini-3.1-pro-preview", result["models"])
+        self.assertEqual(len(result["models"]), 5)
+
+
+class ProviderFormTestRouteTests(unittest.TestCase):
+    def test_freebuff_form_test_checks_connection_without_starting_a_session(self) -> None:
+        from types import SimpleNamespace
+        from gateway.routes.providers import test_provider_config
+
+        class _Client:
+            checked = False
+
+            async def health(self):
+                self.checked = True
+
+        client = _Client()
+
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(accounts=SimpleNamespace(default_client=client)))
+        )
+        result = _run(test_provider_config(request, {"source": "command", "command": "freebuff"}))
+        self.assertTrue(result["ok"])
+        self.assertTrue(client.checked)
+
+    def test_url_form_test_closes_temporary_provider(self) -> None:
+        from gateway.routes.providers import test_provider_config
+
+        class _Provider:
+            closed = False
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def health(self):
+                return True
+
+            async def aclose(self):
+                self.closed = True
+
+        with patch("gateway.routes.providers.OpenAICompatibleProvider", _Provider):
+            result = _run(
+                test_provider_config(
+                    None,
+                    {"source": "url", "base_url": "https://api.example.com/v1", "api_key": "test"},
+                )
+            )
+        self.assertTrue(result["ok"])
 
 
 class FetchModelsRouteTests(unittest.TestCase):
