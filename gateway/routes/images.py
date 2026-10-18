@@ -31,7 +31,9 @@ async def translate_image_endpoint(
     request: Request,
     _auth: None = Depends(check_local_auth),
     file: UploadFile | None = File(None),
+    image: UploadFile | None = File(None),
     target_language: str = Form("Vietnamese"),
+    target_lang: str | None = Form(None),
     instruction: str | None = Form(None),
     description: str | None = Form(None),
     model: str | None = Form(None),
@@ -42,11 +44,12 @@ async def translate_image_endpoint(
     """Translate text inside an image using Vision OCR and local Pillow inpainting.
 
     Accepts either:
-    1. Multipart form-data with file upload (`file=@image.jpg`).
+    1. Multipart form-data with file upload (`file=@image.jpg` or `image=@image.jpg`).
     2. JSON payload with `image_base64` or `image_url`.
     """
     image_bytes: bytes | None = None
-    req_target_lang = target_language
+    upload_file = file or image
+    req_target_lang = target_lang or target_language
     req_instruction = instruction or description
     req_model = model
     req_provider = provider
@@ -79,8 +82,8 @@ async def translate_image_endpoint(
                     image_bytes = resp.content
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Failed to parse JSON image request: {e}") from e
-    elif file is not None:
-        image_bytes = await file.read()
+    elif upload_file is not None:
+        image_bytes = await upload_file.read()
 
     if not image_bytes:
         raise HTTPException(

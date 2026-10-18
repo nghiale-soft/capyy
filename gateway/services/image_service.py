@@ -4,6 +4,7 @@ import base64
 import io
 import json
 import logging
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,28 @@ def create_vertical_gradient(width: int, height: int, color_stops: list[tuple[in
         arr[:, :, :3] = color_stops[0]
         arr[:, :, 3] = 255
         return Image.fromarray(arr, "RGBA")
+
+    # Gradient contrast enhancement:
+    # If provided stops lack contrast (max lum - min lum < 55), inject a luminous specular highlight at the top
+    lums = [0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2] for c in color_stops]
+    if max(lums) - min(lums) < 55:
+        top = color_stops[0]
+        is_warm = top[0] >= top[2]
+        if is_warm:
+            # Champagne gold specular highlight (luminous metallic sheen)
+            bright_top = (
+                min(255, max(235, int(top[0] + 160))),
+                min(255, max(210, int(top[1] + 150))),
+                min(255, max(160, int(top[2] + 120))),
+            )
+        else:
+            bright_top = (
+                min(255, max(230, int(top[0] + 150))),
+                min(255, max(230, int(top[1] + 150))),
+                min(255, max(230, int(top[2] + 150))),
+            )
+        color_stops = [bright_top] + list(color_stops)
+        n_stops = len(color_stops)
 
     positions = np.linspace(0, height - 1, n_stops)
     for y in range(height):
@@ -165,34 +188,54 @@ class ImageTranslationService:
             f"   - Use authentic, high-converting e-commerce terminology that real shoppers search for in {target_language}.\n"
             f"   - CONCISE & PUNCHY MARKETING COPY: East Asian text is compact (3-6 characters). Keep {target_language} translations punchy and concise without verbose filler words (e.g. translate '全身塑形训练' -> 'ĐỊNH HÌNH TOÀN THÂN' or 'SĂN CHẮC TOÀN THÂN' instead of overly long phrases; '腹部塑形训练' -> 'SĂN CHẮC CƠ BỤNG'). This ensures translated titles can be rendered in large, impactful typography.\n"
             f"   - For main marketing titles, preserve uppercase or title casing (e.g. 'MÁY TẬP BỤNG' or 'MÁY TẬP CƠ BỤNG').\n"
-            f"2. CSS STYLING & RICH TEXT EFFECTS DETECTION (CRITICAL FOR GRAPHIC REALISM):\n"
-            f"   - 'gradient_colors': If characters have a vertical linear color gradient or metallic specular reflection (e.g. golden yellow to deep orange, metallic bronze/gold gleam), return an array of 2 to 4 hex colors from top to bottom (e.g. ['#fff176', '#ff8500', '#eb3800'] or ['#3d1c10', '#fff2d0', '#9b5335', '#36150b']). Return null if solid color.\n"
-            f"   - 'stroke_color_hex': If text has a white or contrasting outline stroke, return hex color (e.g. '#ffffff'), else null.\n"
-            f"   - 'stroke_width': Pixel width of the stroke outline (1 to 5), default 0.\n"
+            f"   - HORIZONTAL GUARANTEE / FOOTER RIBBONS: For wide ribbons/banners (e.g. '三年质保 免费试用 赠运费险'), translate concisely on a single line separated by bullets '•', e.g. 'BẢO HÀNH 3 NĂM • DÙNG THỬ 0Đ • TẶNG BẢO HIỂM SHIP'. Never make footer ribbons verbose.\n"
+            f"2. ALGORITHM & STRATEGY SELECTION (CRITICAL: YOU ARE THE STRATEGY DIRECTOR):\n"
+            f"   - 'inpaint_strategy': Select the exact CV inpainting recipe for each text element:\n"
+            f"     * 'preserve_container_stroke_only': MUST be used for text inside containers (speech bubbles, circular callout tags, badges, pill buttons, guarantee ribbons, stickers). Only erases the foreign character strokes while preserving 100% of the container color, shape, borders, gradients, and pointer tails.\n"
+            f"     * 'telea_context_aware': for titles, headlines, or marketing text floating freely on photo backgrounds (sky, table, floor, model's clothing, background scenery).\n"
+            f"     * 'perspective_surface': for text printed on physical product surfaces (bottles, slanted cartons, cans, appliances).\n"
+            f"     * 'flat_color_patch': for text on completely flat solid-colored background strips or monochrome panels.\n"
+            f"     * 'watermark_cleanup': for faint, semi-transparent watermark text or draft guide text (e.g. '请输入文字').\n"
+            f"   - 'layout_policy': Select the typography layout and wrapping policy:\n"
+            f"     * 'single_line_contain': strictly single-line, auto-scaled to fit inside container height & width without wrapping (badges, callout tags, bubbles, guarantee ribbons, buttons).\n"
+            f"     * 'hero_impact_wrap': multi-line balanced wrap with large bold typography for prominent marketing headlines.\n"
+            f"     * 'surface_slant_fit': single-line slanted typography conforming to physical product surface angle.\n"
+            f"   - 'container_shape': 'pill' | 'circle' | 'bubble' | 'ribbon' | 'rectangle' | 'none'.\n"
+            f"   - 'icon_side': 'left' | 'right' | 'none'. If 'left', 'erase_box_2d' and 'box_2d' MUST start after the icon, keeping the icon 100% intact.\n"
+            f"3. CSS STYLING & RICH TEXT EFFECTS DETECTION (CRITICAL FOR GRAPHIC REALISM):\n"
+            f"   - 'gradient_colors': If characters have a vertical linear color gradient, golden sheen, or metallic specular reflection, return an array of 2 to 4 hex colors from TOP (bright reflective highlight, e.g. ['#fff2d0', '#ff8500', '#eb3800'] or ['#fde7b0', '#ca9877', '#3f1c06']) down to BOTTOM (rich shadow/extrusion). Return null if solid color.\n"
+            f"   - 'stroke_color_hex': ONLY return hex color (e.g. '#ffffff') if text has a contrasting outline stroke. NEVER set stroke if text has no outline or if stroke matches text color.\n"
+            f"   - 'stroke_width': Pixel width of the contrasting outline stroke (1 to 4), default 0.\n"
             f"   - 'shadow_color_hex': If text has a warm/dark drop shadow or 3D extrusion, return hex color (e.g. '#ff3300' or '#d4aa88'), else null.\n"
             f"   - 'font_family': 'serif' if text has flared serif or decorative strokes (like luxury/cosmetic display text), else 'sans'.\n"
-            f"3. BADGES & PILL CONTAINERS WITH ICONS:\n"
-            f"   - If a badge or pill contains an icon on the left (e.g. waist, target, house, speaker icon) and text on the right:\n"
-            f"     * 'erase_box_2d': MUST strictly cover ONLY the text portion on the right (xmin starting after the icon, ~35% of the pill width). NEVER include the left icon in 'erase_box_2d'! The left icon must remain 100% intact.\n"
-            f"     * 'box_2d': Text placement area to the right of the icon, with 'align_h': 'center' or 'left'.\n"
-            f"     * 'group_id': 'feature_badges'.\n"
-            f"4. PACKAGING & PROPS HANDLING:\n"
+            f"4. TYPOGRAPHY SCALE & CONCISENESS RULES (MAXIMIZE VISUAL IMPACT):\n"
+            f"   - Prominent Marketing Titles ('hero_impact_wrap'): Always make translations bold, concise, and punchy. If the title is 3-4 words (e.g. 'MÁY TẬP BỤNG'), you may use '\\n' (e.g. 'MÁY TẬP\\nBỤNG' or 'SĂN CHẮC\\nCƠ BỤNG') so each line can render at huge font size filling the vertical space.\n"
+            f"   - Badges, Chips, and Bubble Tags: Match the 2 to 4 Chinese characters with concise 2 to 3 Vietnamese words (e.g. 'TẬP CƠ BỤNG', 'SIẾT CƠ LÕI', 'TIỆN TẠI NHÀ', 'SIÊU ÊM ÁI'). DO NOT output lengthy sentences that compress the font size down.\n"
+            f"5. PACKAGING & PROPS HANDLING:\n"
             f"   - DO NOT translate background props or decorative packaging (such as milk cartons, bottles, prop cans) UNLESS the user explicitly instructed to translate packaging.\n"
             f"   - If instructed to translate packaging: ONLY translate substantive foreign brand names or descriptive foreign words (e.g. '臻浓牛奶' -> 'Sữa tiệt trùng' or 'Sữa tươi'). DO NOT translate or re-render numbers, percentages, volume units, or universal Latin acronyms (e.g. '39%', '250ml', 'UHT', barcodes).\n"
-            f"5. BOUNDING BOXES & FORMATTING:\n"
+            f"6. WATERMARK & DRAFT PLACEHOLDER REMOVAL:\n"
+            f"   - If there is any draft watermark text, template placeholder, or watermark overlay (e.g., '请输入文字', '点击输入文字', sample placeholder text, or copyright watermark), you MUST extract it as a region with:\n"
+            f"     * 'inpaint_strategy': 'watermark_cleanup'\n"
+            f"     * 'translated_text': '' (empty string, so that it is cleanly erased without re-rendering any new text)\n"
+            f"     * 'layout_policy': 'single_line_contain'\n"
+            f"     * 'container_shape': 'none'\n"
+            f"7. HARDWARE CONTROL PANELS & UNIVERSAL ENGLISH BRANDING:\n"
+            f"   - For physical buttons, status indicators, or hardware control panels with standard universal English/icons (e.g. 'MASSAGER', 'Power', 'Auto', 'Heating', 'Low/Medium/High'), do NOT alter them unless they contain foreign Chinese characters or the user explicitly asks to translate hardware buttons.\n"
+            f"8. BOUNDING BOXES & FORMATTING:\n"
             f"   - 'erase_box_2d': [ymin, xmin, ymax, xmax] (0-1000) bounding box enclosing text strokes completely.\n"
             f"   - 'box_2d': [ymin, xmin, ymax, xmax] (0-1000) inner container area available for placing translated text.\n"
             f"   - 'original_text': source text verbatim.\n"
             f"   - 'translated_text': concise, punchy translation in {target_language}.\n"
-            f"   - 'bg_color_hex': hex color of the background immediately behind the text (e.g. '#ffffff' or '#ff7700').\n"
+            f"   - 'bg_color_hex': hex color of the background immediately behind the text (e.g. '#ffffff' or '#ff7236').\n"
             f"   - 'text_color_hex': hex color of the text font (e.g. '#000000' or '#ffffff').\n"
             f"   - 'align_h': 'center' | 'left' | 'right'.\n"
             f"   - 'align_v': 'center' | 'top' | 'bottom'.\n"
-            f"   - 'group_id': string identifier if elements share identical style/container (e.g. 'header', 'feature_badges', 'bubble_labels', 'packaging').\n"
+            f"   - 'group_id': string identifier if elements share identical style/container (e.g. 'header', 'feature_badges', 'bubble_labels', 'tags', 'footer_banner', 'packaging').\n"
             f"   - 'rotation_deg': integer rotation in degrees (-180 to 180) matching physical slant.\n"
             f"   - 'bold': true or false.\n\n"
             f"Return ONLY valid JSON matching this schema:\n"
-            f'{{"regions": [{{"erase_box_2d": [0,0,0,0], "box_2d": [0,0,0,0], "original_text": "...", "translated_text": "...", "bg_color_hex": "#ffffff", "text_color_hex": "#000000", "gradient_colors": ["#fff176", "#eb3800"], "stroke_color_hex": "#ffffff", "stroke_width": 2, "shadow_color_hex": "#ff3300", "font_family": "sans", "align_h": "center", "align_v": "center", "group_id": "header", "rotation_deg": 0, "bold": true}}]}}'
+            f'{{"regions": [{{"erase_box_2d": [0,0,0,0], "box_2d": [0,0,0,0], "original_text": "...", "translated_text": "...", "inpaint_strategy": "preserve_container_stroke_only", "layout_policy": "single_line_contain", "container_shape": "bubble", "icon_side": "none", "bg_color_hex": "#ff7236", "text_color_hex": "#ffffff", "gradient_colors": ["#fff176", "#eb3800"], "stroke_color_hex": "#ffffff", "stroke_width": 2, "shadow_color_hex": "#ff3300", "font_family": "sans", "align_h": "center", "align_v": "center", "group_id": "tags", "rotation_deg": 0, "bold": true}}]}}'
         )
 
 
@@ -414,6 +457,136 @@ class ImageTranslationService:
                 lines.append(" ".join(cur_line))
         return lines
 
+    @staticmethod
+    def _inpaint_strategy_container_stroke(
+        roi: np.ndarray,
+        gray: np.ndarray,
+        text_bgr: np.ndarray,
+        bg_bgr: np.ndarray,
+        text_lum: float,
+        bg_lum: float,
+        roi_h: int,
+        roi_w: int,
+        x1: int,
+        y1: int,
+        region_char_components: list[dict[str, Any]],
+    ) -> np.ndarray:
+        """Isolate foreign text strokes inside container without erasing container shape/gradient."""
+        d_text = np.linalg.norm(roi.astype(np.float32) - text_bgr, axis=2)
+        d_bg = np.linalg.norm(roi.astype(np.float32) - bg_bgr, axis=2)
+
+        if text_lum > bg_lum:
+            # Light text on colored/dark container (e.g. white text on orange/red bubble)
+            cand_mask = ((d_text < 130) & (d_bg > 20) & (gray > min(190, bg_lum + 10))).astype(np.uint8) * 255
+        else:
+            # Dark text on light container (e.g. black text on white pill badge or banner)
+            if bg_lum > 200:
+                cand_mask = ((d_bg > 18) & (gray < max(180, min(228, int(bg_lum - 10))))).astype(np.uint8) * 255
+            else:
+                cand_mask = ((d_text < 125) & (d_bg > 25) & (gray < max(180, bg_lum - 10))).astype(np.uint8) * 255
+
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(cand_mask)
+        clean_char_mask = np.zeros((roi_h, roi_w), dtype=np.uint8)
+        for i in range(1, num_labels):
+            cx, cy, cw_c, ch_c, area = stats[i]
+            touches_edge = (cx <= 1 or cy <= 1 or (cx + cw_c) >= roi_w - 1 or (cy + ch_c) >= roi_h - 1)
+            if touches_edge or area >= (roi_h * roi_w * 0.45):
+                continue
+            if area >= 6:
+                clean_char_mask[labels == i] = 255
+                region_char_components.append({
+                    "cx": float(x1 + centroids[i][0]),
+                    "cy": float(y1 + centroids[i][1]),
+                    "area": float(area),
+                    "w": int(cw_c),
+                    "h": int(ch_c),
+                })
+
+        if np.sum(clean_char_mask > 0) >= 12:
+            kernel_sz = 3 if max(roi_h, roi_w) <= 90 else 4
+            return cv2.dilate(clean_char_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_sz, kernel_sz)))
+        else:
+            # Fallback threshold
+            if text_lum > bg_lum:
+                mask = (gray > 175).astype(np.uint8) * 255
+            else:
+                mask = (gray < 165).astype(np.uint8) * 255
+            return cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
+
+    @staticmethod
+    def _inpaint_strategy_perspective_surface(
+        roi: np.ndarray,
+        gray: np.ndarray,
+        bg_lum: float,
+        roi_h: int,
+        roi_w: int,
+        x1: int,
+        y1: int,
+        region_char_components: list[dict[str, Any]],
+    ) -> np.ndarray:
+        """Isolate slanted text on packaging or physical props for cv2.fitLine slant detection."""
+        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(thresh)
+        char_mask = np.zeros((roi_h, roi_w), dtype=np.uint8)
+        for i in range(1, num_labels):
+            cx, cy, cw, ch, area = stats[i]
+            touches_edge = (cx <= 1 or cy <= 1 or (cx + cw) >= roi_w - 1 or (cy + ch) >= roi_h - 1)
+            if touches_edge or area >= (roi_h * roi_w * 0.70):
+                continue
+            if 8 <= area:
+                char_mask[labels == i] = 255
+                region_char_components.append({
+                    "cx": float(x1 + centroids[i][0]),
+                    "cy": float(y1 + centroids[i][1]),
+                    "area": float(area),
+                    "w": int(cw),
+                    "h": int(ch),
+                })
+        return cv2.dilate(char_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+
+    @staticmethod
+    def _inpaint_strategy_telea_context(
+        roi: np.ndarray,
+        gray: np.ndarray,
+        bg_est: np.ndarray,
+        bg_gray: float,
+    ) -> np.ndarray:
+        """Context-aware inpainting for marketing text floating over photo backgrounds."""
+        diff = np.linalg.norm(roi.astype(np.float32) - bg_est.astype(np.float32), axis=2)
+        if bg_gray > 160:
+            m_c = (gray < (bg_gray - 20)).astype(np.uint8) * 255
+        else:
+            m_c = (gray > (bg_gray + 20)).astype(np.uint8) * 255
+        raw_mask = cv2.bitwise_or((diff > 8).astype(np.uint8) * 255, m_c)
+
+        num_l, lbls, stats, _ = cv2.connectedComponentsWithStats(raw_mask)
+        clean_mask = np.zeros_like(raw_mask)
+        for i in range(1, num_l):
+            if stats[i, cv2.CC_STAT_AREA] >= 20:
+                clean_mask[lbls == i] = 255
+        return cv2.dilate(clean_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (6, 6)))
+
+    @staticmethod
+    def _inpaint_strategy_watermark_cleanup(
+        roi: np.ndarray,
+        gray: np.ndarray,
+        bg_est: np.ndarray,
+        bg_gray: float,
+    ) -> np.ndarray:
+        """Clean faint watermark or draft guide text with high-pass stroke isolation."""
+        bright_strokes = (gray >= 238).astype(np.uint8) * 255
+        diff = np.linalg.norm(roi.astype(np.float32) - bg_est.astype(np.float32), axis=2)
+        local_edges = cv2.Canny(gray, 30, 100)
+        dilated_edges = cv2.dilate(local_edges, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
+        cand_mask = cv2.bitwise_or(bright_strokes, cv2.bitwise_and((diff > 15).astype(np.uint8) * 255, dilated_edges))
+        num_l, lbls, stats, _ = cv2.connectedComponentsWithStats(cand_mask)
+        clean_mask = np.zeros_like(cand_mask)
+        h, w = gray.shape
+        for i in range(1, num_l):
+            if stats[i, cv2.CC_STAT_AREA] < (h * w * 0.35) and stats[i, cv2.CC_STAT_AREA] >= 4:
+                clean_mask[lbls == i] = 255
+        return cv2.dilate(clean_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
+
     def _inpaint_canvas(
         self,
         img: Image.Image,
@@ -462,19 +635,21 @@ class ImageTranslationService:
 
                 region_char_components: list[dict[str, Any]] = []
 
-                is_badge = any(k in str(r.get("group_id", "")).lower() for k in ["badge", "feature", "pill"])
-                is_bubble_group = any(k in str(r.get("group_id", "")).lower() for k in ["bubble", "label"])
-                is_packaging = any(k in str(r.get("group_id", "")).lower() for k in ["packaging", "carton", "prop", "bottle"])
+                gid_str = str(r.get("group_id", "")).lower()
+                is_pill_badge = any(k in gid_str for k in ["badge", "feature", "pill"])
+                is_bubble_group = any(k in gid_str for k in ["bubble", "callout", "doodle", "tag", "chip", "sticker", "stamp"])
+                is_packaging = any(k in gid_str for k in ["packaging", "carton", "prop", "bottle"])
+                is_banner = any(k in gid_str for k in ["banner", "ribbon", "footer", "bar", "strip"])
+                is_container_elem = is_pill_badge or is_bubble_group or is_banner or any(k in gid_str for k in ["label", "button"])
+
+                bg_bgr = np.array([bg_rgb[2], bg_rgb[1], bg_rgb[0]], dtype=np.float32)
+                text_bgr = np.array([text_rgb[2], text_rgb[1], text_rgb[0]], dtype=np.float32)
 
                 for erase_box in boxes_to_erase:
                     ymin, xmin, ymax, xmax = erase_box
 
-                    # Protect left icon in wide pill badges if box was overly inclusive
-                    badge_aspect = (xmax - xmin) / max(1, ymax - ymin)
-                    if is_badge and badge_aspect > 2.0 and xmin < 100:
-                        xmin = xmin + int((xmax - xmin) * 0.35)
-
-                    margin = 10 if (is_packaging or is_bubble_group) else 2
+                    # Use safe container margins
+                    margin = 6 if (is_container_elem or is_packaging) else 2
                     x1 = max(0, min(w - 1, int(xmin * w / 1000) - margin))
                     y1 = max(0, min(h - 1, int(ymin * h / 1000) - margin))
                     x2 = max(x1 + 1, min(w, int(xmax * w / 1000) + margin))
@@ -486,7 +661,6 @@ class ImageTranslationService:
                     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
                     roi_h, roi_w = gray.shape
 
-                    # Sample local background from edges of ROI
                     edge_pts = np.concatenate([
                         roi[:3, :].reshape(-1, 3), roi[-3:, :].reshape(-1, 3),
                         roi[:, :3].reshape(-1, 3), roi[:, -3:].reshape(-1, 3)
@@ -494,50 +668,37 @@ class ImageTranslationService:
                     bg_est = np.median(edge_pts, axis=0)
                     bg_gray = float(0.299 * bg_est[2] + 0.587 * bg_est[1] + 0.114 * bg_est[0])
 
-                    if (is_bubble_group or is_packaging) and bg_lum > 180:
-                        # For speech bubbles and packaging on light backgrounds: isolate text characters cleanly
-                        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-                        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(thresh)
-                        char_mask = np.zeros((roi_h, roi_w), dtype=np.uint8)
-                        for i in range(1, num_labels):
-                            cx, cy, cw, ch, area = stats[i]
-                            touches_edge = (cx <= 1 or cy <= 1 or (cx + cw) >= roi_w - 1 or (cy + ch) >= roi_h - 1)
-                            if touches_edge or area >= (roi_h * roi_w * 0.70):
-                                continue
-                            if 8 <= area:
-                                char_mask[labels == i] = 255
-                                region_char_components.append({
-                                    "cx": float(x1 + centroids[i][0]),
-                                    "cy": float(y1 + centroids[i][1]),
-                                    "area": float(area),
-                                    "w": int(cw),
-                                    "h": int(ch),
-                                })
-                        dilated = cv2.dilate(char_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
-                    elif is_badge:
-                        # For badges: white text on colored badge vs dark text on light badge
-                        if text_lum > bg_lum:
-                            mask = (gray > 175).astype(np.uint8) * 255
+                    # Determine inpaint strategy (AI-directed with autonomous heuristic fallback)
+                    strategy = str(r.get("inpaint_strategy") or "").strip().lower()
+                    if not strategy:
+                        if is_packaging and bg_lum > 180:
+                            strategy = "perspective_surface"
+                        elif is_container_elem:
+                            strategy = "preserve_container_stroke_only"
+                        elif "watermark" in gid_str:
+                            strategy = "watermark_cleanup"
                         else:
-                            mask = (gray < 165).astype(np.uint8) * 255
-                        dilated = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (4, 4)))
-                    else:
-                        # General marketing text: color Euclidean difference + contrast
-                        # Threshold at diff > 8 to capture both text strokes AND soft drop-shadow / specular halos
-                        diff = np.linalg.norm(roi.astype(np.float32) - bg_est.astype(np.float32), axis=2)
-                        if bg_gray > 160:
-                            m_c = (gray < (bg_gray - 20)).astype(np.uint8) * 255
-                        else:
-                            m_c = (gray > (bg_gray + 20)).astype(np.uint8) * 255
-                        raw_mask = cv2.bitwise_or((diff > 8).astype(np.uint8) * 255, m_c)
+                            strategy = "telea_context_aware"
 
-                        # Filter tiny background noise specks (< 20px)
-                        num_l, lbls, stats, _ = cv2.connectedComponentsWithStats(raw_mask)
-                        clean_mask = np.zeros_like(raw_mask)
-                        for i in range(1, num_l):
-                            if stats[i, cv2.CC_STAT_AREA] >= 20:
-                                clean_mask[lbls == i] = 255
-                        dilated = cv2.dilate(clean_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (6, 6)))
+                    if strategy in ("preserve_container_stroke_only", "container_stroke"):
+                        dilated = self._inpaint_strategy_container_stroke(
+                            roi, gray, text_bgr, bg_bgr, text_lum, bg_lum, roi_h, roi_w, x1, y1, region_char_components
+                        )
+                    elif strategy == "perspective_surface":
+                        dilated = self._inpaint_strategy_perspective_surface(
+                            roi, gray, bg_lum, roi_h, roi_w, x1, y1, region_char_components
+                        )
+                    elif strategy == "watermark_cleanup":
+                        dilated = self._inpaint_strategy_watermark_cleanup(
+                            roi, gray, bg_est, bg_gray
+                        )
+                    elif strategy == "flat_color_patch":
+                        cv_bgr[y1:y2, x1:x2] = bg_bgr.astype(np.uint8)
+                        continue
+                    else:
+                        dilated = self._inpaint_strategy_telea_context(
+                            roi, gray, bg_est, bg_gray
+                        )
 
                     # Accumulate directly to full_mask for seamless context-aware OpenCV inpainting
                     full_mask[y1:y2, x1:x2] = cv2.bitwise_or(full_mask[y1:y2, x1:x2], dilated)
@@ -610,14 +771,11 @@ class ImageTranslationService:
             ymin, xmin, ymax, xmax = box
 
             gid_lower = str(r.get("group_id", "")).lower()
-            is_bubble = any(k in gid_lower for k in ["bubble", "callout", "doodle"])
+            is_bubble = any(k in gid_lower for k in ["bubble", "callout", "doodle", "tag", "chip", "sticker", "stamp"])
             is_pill_badge = any(k in gid_lower for k in ["badge", "feature", "pill"])
             is_packaging = any(k in gid_lower for k in ["packaging", "carton", "prop", "bottle"])
-            is_badge = is_pill_badge or is_bubble or any(k in gid_lower for k in ["label", "chip", "tag", "button"])
-
-            badge_aspect = (xmax - xmin) / max(1, ymax - ymin)
-            if is_pill_badge and badge_aspect > 2.0 and xmin < 100:
-                xmin = xmin + int((xmax - xmin) * 0.35)
+            is_horizontal_banner = any(k in gid_lower for k in ["banner", "ribbon", "footer", "bar", "strip"]) or ((xmax - xmin) / max(1, ymax - ymin) >= 4.0 and ymin > 600)
+            is_badge = is_pill_badge or is_bubble or any(k in gid_lower for k in ["label", "button"])
 
             x1 = max(0, min(w, int(xmin * w / 1000)))
             y1 = max(0, min(h, int(ymin * h / 1000)))
@@ -627,19 +785,60 @@ class ImageTranslationService:
             box_w = max(10, x2 - x1)
             box_h = max(10, y2 - y1)
 
-            # Proportional safe padding inside container
-            if is_bubble:
-                pad_x = max(10, int(box_w * 0.12))
-                pad_y = max(8, int(box_h * 0.12))
-            elif is_pill_badge:
+            # Layout & Typography Policy Dispatcher
+            policy = str(r.get("layout_policy") or "").strip().lower()
+            container_shape = str(r.get("container_shape") or "").strip().lower()
+            icon_side = str(r.get("icon_side") or "none").strip().lower()
+
+            # If icon is on the left or right, constrain text rendering box strictly to the text portion
+            if icon_side == "left":
+                erase_box = sanitize_box(r.get("erase_box_2d"))
+                if erase_box:
+                    x_erase_start = max(0, min(w, int(erase_box[1] * w / 1000)))
+                    if x_erase_start > x1:
+                        x1 = x_erase_start
+                else:
+                    x1 = x1 + int(box_w * 0.28)
+                box_w = max(10, x2 - x1)
+            elif icon_side == "right":
+                erase_box = sanitize_box(r.get("erase_box_2d"))
+                if erase_box:
+                    x_erase_end = max(0, min(w, int(erase_box[3] * w / 1000)))
+                    if x_erase_end < x2:
+                        x2 = x_erase_end
+                else:
+                    x2 = x2 - int(box_w * 0.28)
+                box_w = max(10, x2 - x1)
+
+            if not policy:
+                if is_badge or is_horizontal_banner:
+                    policy = "single_line_contain"
+                elif is_packaging or abs(rotation_deg) >= 5:
+                    policy = "surface_slant_fit"
+                elif is_header_elem:
+                    policy = "hero_impact_wrap"
+                else:
+                    policy = "single_line_contain" if box_h < 45 else "hero_impact_wrap"
+
+            # Proportional safe padding inside container based on shape & icon
+            if container_shape in ("bubble", "circle") or is_bubble:
+                pad_x = max(6, int(box_w * 0.08))
+                pad_y = max(4, int(box_h * 0.10))
+            elif container_shape in ("ribbon", "strip") or is_horizontal_banner:
+                pad_x = max(10, int(box_w * 0.03))
+                pad_y = max(4, int(box_h * 0.12))
+            elif container_shape == "pill" or is_pill_badge:
                 pad_x = max(6, int(box_w * 0.05))
                 pad_y = max(4, int(box_h * 0.08))
             else:
                 pad_x = max(2, int(box_w * 0.03))
                 pad_y = max(2, int(box_h * 0.05))
 
+            if icon_side == "left":
+                pad_x = max(int(box_w * 0.12), pad_x)
+
             # Left screen edge protection for bubbles and badges
-            if x1 <= 5 and (is_pill_badge or is_bubble):
+            if x1 <= 5 and (is_pill_badge or is_bubble or container_shape in ("pill", "bubble")):
                 pad_x = max(14, pad_x)
 
             avail_w = max(8, box_w - 2 * pad_x)
@@ -647,9 +846,9 @@ class ImageTranslationService:
 
             # Headline & Header Expansion:
             # If item is in the top header/title area on the left margin, allow avail_w to expand into available safe whitespace
-            is_header_elem = any(k in str(r.get("group_id", "")).lower() for k in ["header", "title", "hero", "main"]) or (ymin < 300 and box_h >= 60 and xmin < 250)
-            if is_header_elem and x1 < int(w * 0.25):
-                safe_max_x = int(w * 0.44)
+            is_header_elem = any(k in str(r.get("group_id", "")).lower() for k in ["header", "title", "hero", "main"]) or (ymin < 300 and box_h >= 60 and xmin < 300)
+            if is_header_elem and x1 < int(w * 0.35):
+                safe_max_x = int(w * 0.60)
                 if safe_max_x > x1:
                     avail_w = max(avail_w, safe_max_x - x1)
 
@@ -664,6 +863,30 @@ class ImageTranslationService:
             stroke_width = max(0, min(8, int(r.get("stroke_width") or 0)))
             stroke_color = parse_hex_color(r.get("stroke_color_hex")) if r.get("stroke_color_hex") else None
             shadow_color = parse_hex_color(r.get("shadow_color_hex")) if r.get("shadow_color_hex") else None
+
+            # Stroke sanitization:
+            # If stroke color has no contrast against text color, cancel it (prevents fat, clogged, blurry characters)
+            bg_hex = r.get("bg_color_hex") or r.get("bg_color")
+            bg_rgb = parse_hex_color(bg_hex, (255, 255, 255))
+            bg_lum = 0.299 * bg_rgb[0] + 0.587 * bg_rgb[1] + 0.114 * bg_rgb[2]
+            fg_lum = 0.299 * fg[0] + 0.587 * fg[1] + 0.114 * fg[2]
+
+            if stroke_width > 0 and stroke_color:
+                c_dist = math.sqrt(sum((a - b) ** 2 for a, b in zip(stroke_color, fg)))
+                s_lum = 0.299 * stroke_color[0] + 0.587 * stroke_color[1] + 0.114 * stroke_color[2]
+                if c_dist < 45 or (fg_lum < 60 and s_lum < 60):
+                    stroke_width = 0
+                    stroke_color = None
+
+            # Contrast safety protection:
+            # If text color is white/near-white and rendered on light background without stroke, add subtle dark outline
+            if stroke_width == 0 and stroke_color is None:
+                if fg_lum > 210 and bg_lum > 180:
+                    stroke_width = 1
+                    stroke_color = (60, 60, 60)
+                elif fg_lum < 50 and bg_lum < 75:
+                    stroke_width = 1
+                    stroke_color = (255, 255, 255)
 
             gradient_colors = r.get("gradient_colors")
             gradient_stops = None
@@ -685,28 +908,32 @@ class ImageTranslationService:
             best_lines: list[str] = []
 
             # Single-line enforcement:
-            # Badges, speech bubbles, product packaging, and slanted elements must strictly remain single-line
-            is_single_line_only = is_badge or is_packaging or (abs(rotation_deg) >= 5)
+            # Ribbons, packaging, and slanted elements must strictly remain single-line.
+            # Badges default to single-line, but allow 2 lines if height is generous (box_h >= 50) and words >= 3.
+            is_ribbon_or_slant = container_shape in ("ribbon", "strip") or is_horizontal_banner or is_packaging or policy == "surface_slant_fit" or (abs(rotation_deg) >= 5)
+            is_single_line_only = is_ribbon_or_slant or (policy == "single_line_contain" and (box_h < 50 or len(translated_text.split()) < 3))
 
             # Typography layout optimization:
             # A. Evaluate single-line candidate
             single_sz = 0
             single_font = None
             if "\n" not in translated_text:
-                if is_packaging:
+                if policy == "surface_slant_fit" or is_packaging:
                     orig_glyph_h = float(r.get("orig_glyph_h") or 0)
                     if orig_glyph_h > 10:
                         max_single_sz = max(13, min(int(orig_glyph_h * 0.60), 20))
                     else:
                         max_single_sz = max(13, min(int(min(avail_w, avail_h) * 0.22), 20))
-                elif is_bubble:
-                    max_single_sz = min(28, max(14, int(avail_h * 0.60)))
-                elif is_badge:
-                    max_single_sz = min(36, max(14, int(avail_h * 0.75)))
+                elif container_shape in ("ribbon", "strip") or is_horizontal_banner:
+                    max_single_sz = min(28, max(13, int(avail_h * 0.65)))
+                elif container_shape in ("bubble", "circle") or is_bubble:
+                    max_single_sz = min(28, max(14, int(avail_h * 0.65)))
+                elif container_shape == "pill" or is_pill_badge:
+                    max_single_sz = min(36, max(16, int(avail_h * 0.75)))
                 else:
-                    max_single_sz = min(120, max(16, int(avail_h * 0.90)))
+                    max_single_sz = min(120, max(18, int(avail_h * 0.90)))
 
-                for sz in range(max_single_sz, 12, -1):
+                for sz in range(max_single_sz, 10, -1):
                     font = self._get_font(sz, bold=bold, family=font_family)
                     bb = draw.textbbox((0, 0), translated_text, font=font, stroke_width=stroke_width)
                     tw = bb[2] - bb[0]
@@ -716,13 +943,13 @@ class ImageTranslationService:
                         single_sz = sz
                         break
 
-            # B. Evaluate multi-line candidate (up to 2 lines for titles/subtitles, NEVER for badges/buttons/packaging)
+            # B. Evaluate multi-line candidate (up to 2 lines for titles/subtitles/flexible badges)
             multi_sz = 0
             multi_font = None
             multi_lines: list[str] = []
             words = translated_text.split()
             if not is_single_line_only and len(words) >= 2 and avail_h >= 45:
-                max_multi_sz = min(85, max(14, int(avail_h * 0.65)))
+                max_multi_sz = min(110, max(16, int(avail_h * 0.75)))
                 for sz in range(max_multi_sz, 14, -1):
                     font = self._get_font(sz, bold=bold, family=font_family)
                     lines = self._wrap_text(translated_text, font, avail_w, draw)
@@ -738,11 +965,25 @@ class ImageTranslationService:
                             break
 
             # Selection rule:
-            # If multi-line yields a significantly bolder, larger font (>= 25% larger) and single-line was small (< 42px), choose 2-line wrap!
-            if not is_single_line_only and multi_sz and single_sz and multi_sz >= int(single_sz * 1.25) and single_sz < 42:
-                best_font = multi_font
-                best_size = multi_sz
-                best_lines = multi_lines
+            is_title = is_header_elem or policy == "hero_impact_wrap"
+            if not is_single_line_only and multi_sz and single_sz:
+                if is_title:
+                    if multi_sz >= int(single_sz * 1.15) or single_sz < int(avail_h * 0.50):
+                        best_font = multi_font
+                        best_size = multi_sz
+                        best_lines = multi_lines
+                    else:
+                        best_font = single_font
+                        best_size = single_sz
+                        best_lines = [translated_text]
+                elif multi_sz >= int(single_sz * 1.25) and single_sz < 30:
+                    best_font = multi_font
+                    best_size = multi_sz
+                    best_lines = multi_lines
+                else:
+                    best_font = single_font
+                    best_size = single_sz
+                    best_lines = [translated_text]
             elif single_font:
                 best_font = single_font
                 best_size = single_sz
@@ -826,10 +1067,10 @@ class ImageTranslationService:
                 if not is_header_group:
                     avg_h = sum(m["box_h"] for m in group_members) / len(group_members)
                     if all(0.75 * avg_h <= m["box_h"] <= 1.25 * avg_h for m in group_members):
-                        min_group_size = max(16, min(m["font_size"] for m in group_members))
+                        min_group_size = max(12, min(m["font_size"] for m in group_members))
                         if any(m.get("is_badge") for m in group_members):
                             # Ensure all badges fit on a single line at the synchronized font size
-                            for sz in range(min_group_size, 12, -1):
+                            for sz in range(min_group_size, 10, -1):
                                 all_fit = True
                                 for m in group_members:
                                     test_font = self._get_font(sz, bold=m["bold"], family=m["font_family"])
@@ -973,8 +1214,10 @@ class ImageTranslationService:
                         lx = base_x
                     f_draw.text((lx - bb[0], cur_y - bb[1]), l, font=font, fill=255)
                     cur_y += lh + spacing
-                grad = create_vertical_gradient(layer_w, layer_h, stops)
-                text_layer.paste(grad, (0, 0), mask=fill_mask)
+                grad = create_vertical_gradient(layer_w, max(1, total_text_h), stops)
+                grad_layer = Image.new("RGBA", (layer_w, layer_h), (0, 0, 0, 0))
+                grad_layer.paste(grad, (0, base_y))
+                text_layer.paste(grad_layer, (0, 0), mask=fill_mask)
             else:
                 cur_y = base_y
                 for l, bb, lw, lh in zip(lines, line_bboxes, line_widths, line_heights):
@@ -1006,12 +1249,57 @@ class ImageTranslationService:
             paste_y = content_y - base_y
 
             if rot != 0:
-                rotated_layer = text_layer.rotate(rot, resample=Image.BICUBIC, expand=True)
+                ss_scale = 2
+                ss_font = self._get_font(font.size * ss_scale, bold=item["bold"], family=item["font_family"])
+                ss_spacing = max(2, int(ss_font.size * 0.15))
+                ss_bboxes = [draw.textbbox((0, 0), l, font=ss_font, stroke_width=stroke_w * ss_scale) for l in lines]
+                ss_lws = [(b[2] - b[0]) for b in ss_bboxes]
+                ss_lhs = [(b[3] - b[1]) for b in ss_bboxes]
+                ss_total_th = sum(ss_lhs) + ss_spacing * max(0, len(lines) - 1)
+                ss_max_w = max(ss_lws, default=max_text_w * ss_scale)
+
+                ss_layer_w = ss_max_w + stroke_w * ss_scale * 2 + 80
+                ss_layer_h = ss_total_th + stroke_w * ss_scale * 2 + 80
+                ss_layer = Image.new("RGBA", (ss_layer_w, ss_layer_h), (0, 0, 0, 0))
+                ss_draw = ImageDraw.Draw(ss_layer)
+                ss_bx = 40 + stroke_w * ss_scale
+                ss_by = 40 + stroke_w * ss_scale
+
+                if stroke_w > 0 and stroke_c:
+                    cur_sy = ss_by
+                    for l, bb, lw, lh in zip(lines, ss_bboxes, ss_lws, ss_lhs):
+                        lx = ss_bx + (ss_max_w - lw) // 2 if align_h == "center" else (ss_bx + (ss_max_w - lw) if align_h == "right" else ss_bx)
+                        ss_draw.text((lx - bb[0], cur_sy - bb[1]), l, font=ss_font, fill=(*stroke_c, 255), stroke_width=stroke_w * ss_scale, stroke_fill=(*stroke_c, 255))
+                        cur_sy += lh + ss_spacing
+
+                if stops:
+                    ss_mask = Image.new("L", (ss_layer_w, ss_layer_h), 0)
+                    m_draw = ImageDraw.Draw(ss_mask)
+                    cur_y = ss_by
+                    for l, bb, lw, lh in zip(lines, ss_bboxes, ss_lws, ss_lhs):
+                        lx = ss_bx + (ss_max_w - lw) // 2 if align_h == "center" else (ss_bx + (ss_max_w - lw) if align_h == "right" else ss_bx)
+                        m_draw.text((lx - bb[0], cur_y - bb[1]), l, font=ss_font, fill=255)
+                        cur_y += lh + ss_spacing
+                    ss_grad = create_vertical_gradient(ss_layer_w, max(1, ss_total_th), stops)
+                    ss_glayer = Image.new("RGBA", (ss_layer_w, ss_layer_h), (0, 0, 0, 0))
+                    ss_glayer.paste(ss_grad, (0, ss_by))
+                    ss_layer.paste(ss_glayer, (0, 0), mask=ss_mask)
+                else:
+                    cur_y = ss_by
+                    for l, bb, lw, lh in zip(lines, ss_bboxes, ss_lws, ss_lhs):
+                        lx = ss_bx + (ss_max_w - lw) // 2 if align_h == "center" else (ss_bx + (ss_max_w - lw) if align_h == "right" else ss_bx)
+                        ss_draw.text((lx - bb[0], cur_y - bb[1]), l, font=ss_font, fill=(*fg, 255))
+                        cur_y += lh + ss_spacing
+
+                rotated_2x = ss_layer.rotate(rot, resample=Image.BICUBIC, expand=True)
+                tgt_w = max(1, rotated_2x.width // ss_scale)
+                tgt_h = max(1, rotated_2x.height // ss_scale)
+                text_layer = rotated_2x.resize((tgt_w, tgt_h), resample=Image.LANCZOS)
+
                 center_x = (x1 + x2) // 2
                 center_y = (y1 + y2) // 2
-                paste_x = center_x - rotated_layer.width // 2
-                paste_y = center_y - rotated_layer.height // 2
-                text_layer = rotated_layer
+                paste_x = center_x - text_layer.width // 2
+                paste_y = center_y - text_layer.height // 2
 
             rgba_out = out.convert("RGBA")
             rgba_out.paste(text_layer, (paste_x, paste_y), mask=text_layer)
