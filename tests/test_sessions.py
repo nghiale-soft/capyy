@@ -193,6 +193,16 @@ class RateLimitedSessionManager:
         raise CodebuffError("quota exhausted", 429)
 
 
+class UnavailableSessionManager:
+    async def acquire_session(self, model, messages=None):
+        raise CodebuffError("upstream unavailable", 502)
+
+
+class InvalidCredentialSessionManager:
+    async def acquire_session(self, model, messages=None):
+        raise CodebuffError("Invalid API key or user not found", 404)
+
+
 class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
     async def test_refresh_session_forces_fresh_session_when_delete_fails(self):
         client = RefreshClient()
@@ -338,6 +348,23 @@ class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
                 await first.aclose()
                 await pool.aclose()
 
+    async def test_account_pool_times_out_when_all_accounts_stay_busy(self):
+        settings = Settings(
+            codebuff_token="token-a",
+            local_api_key=None,
+            request_timeout=0.01,
+        )
+
+        with patch("providers.freebuff.CodebuffClient", PoolClient):
+            pool = CodebuffAccountPool(settings)
+            first = await pool.acquire_session("deepseek/deepseek-v4-flash")
+            try:
+                with self.assertRaisesRegex(CodebuffError, "Timed out waiting"):
+                    await pool.acquire_session("deepseek/deepseek-v4-flash")
+            finally:
+                await first.aclose()
+                await pool.aclose()
+
     async def test_account_pool_skips_rate_limited_account(self):
         settings = Settings(
             codebuff_token="token-a,token-b",
@@ -393,6 +420,60 @@ class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
                 next_lease = await pool.acquire_session("deepseek/deepseek-v4-flash")
                 self.assertEqual(next_lease.client.settings.codebuff_token, "token-b")
                 await next_lease.aclose()
+                await pool.aclose()
+
+    async def test_account_pool_fails_over_when_session_creation_returns_502(self):
+        settings = Settings(
+            codebuff_token="token-a,token-b",
+            local_api_key=None,
+            account_cooldown=60,
+        )
+
+        with patch("providers.freebuff.CodebuffClient", PoolClient):
+            pool = CodebuffAccountPool(settings)
+            pool._accounts[0].sessions = UnavailableSessionManager()
+            lease = await pool.acquire_session("deepseek/deepseek-v4-flash")
+            try:
+                self.assertEqual(lease.client.settings.codebuff_token, "token-b")
+                self.assertEqual(pool.public_account_statuses()[0]["status"], "error")
+            finally:
+                await lease.aclose()
+                await pool.aclose()
+
+    async def test_account_pool_fails_over_when_session_creation_returns_404(self):
+        settings = Settings(
+            codebuff_token="invalid-token,healthy-token",
+            local_api_key=None,
+        )
+
+        with patch("providers.freebuff.CodebuffClient", PoolClient):
+            pool = CodebuffAccountPool(settings)
+            pool._accounts[0].sessions = InvalidCredentialSessionManager()
+            lease = await pool.acquire_session("deepseek/deepseek-v4-flash")
+            try:
+                self.assertEqual(lease.client.settings.codebuff_token, "healthy-token")
+                self.assertEqual(pool.public_account_statuses()[0]["last_error_status"], 404)
+            finally:
+                await lease.aclose()
+                await pool.aclose()
+
+    async def test_account_pool_reports_when_every_token_fails_session_setup(self):
+        settings = Settings(
+            codebuff_token="token-a,token-b",
+            local_api_key=None,
+        )
+
+        with patch("providers.freebuff.CodebuffClient", PoolClient):
+            pool = CodebuffAccountPool(settings)
+            for account in pool._accounts:
+                account.sessions = UnavailableSessionManager()
+            try:
+                with self.assertRaisesRegex(
+                    CodebuffError,
+                    "All Freebuff tokens are currently unavailable or invalid",
+                ):
+                    await pool.acquire_session("deepseek/deepseek-v4-flash")
+            finally:
                 await pool.aclose()
 
     async def test_account_pool_reports_when_all_accounts_rate_limited(self):

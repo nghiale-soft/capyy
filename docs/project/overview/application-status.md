@@ -15,7 +15,7 @@ the dashboard defaults to port `2222`.
 | OpenAI-compatible chat and models | Implemented: `/v1/chat/completions`, `/v1/models` |
 | Anthropic-compatible messages | Implemented: `/v1/messages` |
 | Provider routing and failover | Implemented in Registry/Router; behavior covered by repository tests |
-| Provider management | Implemented through `/api/providers/*`; configuration is persisted in `config/providers.json` by default |
+| Provider management | Implemented through `/api/providers/*`; configuration is persisted in local JSON mode or the `capyy.providers` and `capyy.provider_models` tables in shared Docker mode |
 | FreeBuff account pool | Implemented with file-backed tokens, round-robin, cooldown, retry, and dashboard management |
 | Dashboard | Implemented as a separate FastAPI app on port `2222` |
 | Chat history | Implemented as per-project/per-session JSONL storage, bounded current-session recall, read-only virtual browse tools with audit logs, and Claude Code/Codex import |

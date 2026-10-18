@@ -41,6 +41,11 @@ class CodebuffError(RuntimeError):
         self.reset_at = reset_at
 
 
+def should_failover_account(error: CodebuffError) -> bool:
+    """Whether an upstream failure should retire this account and try another."""
+    return error.status_code in {401, 403, 404, 408, 429} or error.status_code >= 500
+
+
 def is_waiting_room_required(error: CodebuffError) -> bool:
     """True when upstream reports 428 waiting_room_required.
 
@@ -94,7 +99,10 @@ class CodebuffClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self._client = httpx.AsyncClient(
-            timeout=httpx.Timeout(settings.request_timeout, read=None),
+            timeout=httpx.Timeout(
+                settings.request_timeout,
+                read=settings.request_timeout,
+            ),
             follow_redirects=True,
             proxy=settings.upstream_proxy_url,
             trust_env=False,
@@ -173,10 +181,7 @@ class CodebuffClient:
                 )
             if response.status_code >= 400:
                 error = _upstream_error(response)
-                if (
-                    _retriable_for_method(method, response.status_code)
-                    and attempt < max_attempts
-                ):
+                if _should_retry_response(method, response) and attempt < max_attempts:
                     logger.warning(
                         "upstream %s %s status=%s retrying attempt=%s/%s: %s",
                         method,
@@ -561,10 +566,7 @@ class CodebuffClient:
                             body=text,
                             prefix="Codebuff chat failed",
                         )
-                        if (
-                            _is_retriable_status(response.status_code)
-                            and attempt < max_attempts
-                        ):
+                        if _should_retry_response("POST", response) and attempt < max_attempts:
                             logger.warning(
                                 "chat upstream status=%s retrying attempt=%s/%s: %s",
                                 response.status_code,
@@ -583,6 +585,12 @@ class CodebuffClient:
                             )
                         yield line
                     return
+            except httpx.TimeoutException as error:
+                raise CodebuffError(
+                    f"Codebuff chat timed out after {self.settings.request_timeout:g}s "
+                    "without receiving upstream data.",
+                    504,
+                ) from error
             except httpx.RequestError as error:
                 raise _network_error("POST", url, error) from error
         assert last_error is not None
@@ -821,7 +829,7 @@ class CodebuffAccountLease:
     def mark_rate_limited(
         self, duration: float, *, error: CodebuffError | None = None
     ) -> None:
-        """Mark this account as 429'd upstream; no new requests for `duration` seconds.
+        """Temporarily stop assigning new requests to this unavailable account.
 
         `error` carries the upstream 429 window (`retryAfterMs` / `resetAt`) so
         the pool honors the real reset time instead of the fixed cooldown.
@@ -865,6 +873,7 @@ class CodebuffAccountPool:
         self._default_index = default_index % len(self._accounts)
         self._on_default_change = on_default_change
         self._account_cooldown = settings.account_cooldown
+        self._request_timeout = settings.request_timeout
         self._condition = asyncio.Condition()
 
     @property
@@ -894,30 +903,47 @@ class CodebuffAccountPool:
         model: str,
         messages: list[dict[str, Any]] | None = None,
     ) -> CodebuffAccountLease:
-        # Quota belongs to an account, not the whole pool.  Do not let a 429
-        # from token A prevent a healthy token B from being tried.
+        # Account failures must not prevent a healthy token from being tried.
         if self._all_accounts_rate_limited():
             raise self._all_accounts_rate_limited_error()
 
-        # A 429 can happen while obtaining the upstream Freebuff session,
-        # before a CodebuffAccountLease exists. Previously that immediately
-        # escaped to the caller, so a newly-added second token was never tried.
-        # Mark that account unavailable and try each remaining account once.
-        last_rate_limit: CodebuffError | None = None
+        # A token may fail before a lease is returned. Mark it unavailable and
+        # try each remaining account before returning an error to the route.
+        last_account_error: CodebuffError | None = None
+        deadline = time.monotonic() + self._request_timeout
         for _ in range(self.account_count):
-            account_index = await self._reserve_account()
-            account = self._accounts[account_index]
+            account_index: int | None = None
             try:
-                session_lease = await account.sessions.acquire_session(model, messages)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("account preparation deadline expired")
+                async with asyncio.timeout(remaining):
+                    account_index = await self._reserve_account()
+                    account = self._accounts[account_index]
+                    session_lease = await account.sessions.acquire_session(model, messages)
+            except TimeoutError as error:
+                if account_index is not None:
+                    await self.release(account_index)
+                raise CodebuffError(
+                    "Timed out waiting for an available Freebuff account while preparing a session.",
+                    504,
+                ) from error
             except CodebuffError as error:
-                await self.release(account_index)
-                if error.status_code not in {401, 403, 429}:
+                if account_index is not None:
+                    await self.release(account_index)
+                else:
+                    raise
+                if not should_failover_account(error):
                     raise
                 self.mark_rate_limited(
                     account_index, self._account_cooldown, error=error
                 )
-                last_rate_limit = error
+                last_account_error = error
                 continue
+            except Exception:
+                if account_index is not None:
+                    await self.release(account_index)
+                raise
             except Exception:
                 await self.release(account_index)
                 raise
@@ -928,8 +954,16 @@ class CodebuffAccountPool:
                 _pool=self,
                 _account_index=account_index,
             )
-        assert last_rate_limit is not None
-        raise last_rate_limit
+        if self._all_accounts_rate_limited():
+            raise self._all_accounts_rate_limited_error()
+        assert last_account_error is not None
+        raise CodebuffError(
+            f"All {self.account_count} Freebuff tokens failed while preparing a session. "
+            f"Last token error: {last_account_error}",
+            last_account_error.status_code,
+            retry_after_ms=last_account_error.retry_after_ms,
+            reset_at=last_account_error.reset_at,
+        ) from last_account_error
 
     async def release(self, account_index: int) -> None:
         async with self._condition:
@@ -943,7 +977,7 @@ class CodebuffAccountPool:
         *,
         error: CodebuffError | None = None,
     ) -> None:
-        """Mark this account as 429'd upstream; no new requests until the window passes.
+        """Stop assigning requests to an unavailable account for the cooldown.
 
         The upstream 429 body carries the real reset window (`retryAfterMs` /
         `resetAt`); honor that instead of the fixed `settings.account_cooldown`
@@ -1000,7 +1034,16 @@ class CodebuffAccountPool:
                 if account_index is not None:
                     self._accounts[account_index].busy = True
                     return account_index
-                await self._condition.wait()
+                if self._all_accounts_rate_limited():
+                    raise self._all_accounts_rate_limited_error()
+                try:
+                    async with asyncio.timeout(self._request_timeout):
+                        await self._condition.wait()
+                except TimeoutError as error:
+                    raise CodebuffError(
+                        "Timed out waiting for an available Freebuff token.",
+                        503,
+                    ) from error
 
     def public_account_statuses(self) -> list[dict[str, Any]]:
         """Return dashboard-safe runtime state for each configured account.
@@ -1067,12 +1110,16 @@ class CodebuffAccountPool:
 
     def _all_accounts_rate_limited_error(self) -> CodebuffError:
         limited = [account for account in self._accounts if self._account_rate_limited(account)]
-        reset_account = min(
-            (account for account in limited if account.quota_reset_epoch > time.time()),
-            key=lambda account: account.quota_reset_epoch,
-            default=None,
-        )
-        if reset_account is not None:
+        quota_limited = [
+            account
+            for account in limited
+            if account.quota_reset_epoch > time.time()
+        ]
+        if len(quota_limited) == self.account_count:
+            reset_account = min(
+                quota_limited,
+                key=lambda account: account.quota_reset_epoch,
+            )
             when = self._format_quota_refill(reset_account)
             message = (
                 f"All Freebuff tokens have exhausted their quota; the next refill is {when} "
@@ -1081,9 +1128,9 @@ class CodebuffAccountPool:
             )
             return CodebuffError(message, 429, reset_at=reset_account.reset_at)
         return CodebuffError(
-            "All Freebuff tokens are temporarily rate-limited. "
-            "Configure a lower-priority provider or retry shortly.",
-            429,
+            "All Freebuff tokens are currently unavailable or invalid. "
+            "Check the configured credentials or retry shortly.",
+            503,
         )
 
     def _format_quota_refill(self, account: CodebuffAccount) -> str:
@@ -1209,6 +1256,21 @@ def _retriable_for_method(method: str, status_code: int) -> bool:
     if method in {"GET", "HEAD"}:
         return _is_retriable_status(status_code)
     return status_code == 429
+
+
+def _should_retry_response(method: str, response: httpx.Response) -> bool:
+    if not _retriable_for_method(method, response.status_code):
+        return False
+    if response.status_code != 429:
+        return True
+    try:
+        data = response.json()
+    except ValueError:
+        return True
+    return not (
+        data.get("verificationRequired") is True
+        or data.get("status") in {"spend_limited", "rate_limited"}
+    )
 
 
 def _retry_delay(attempt: int, settings: Settings) -> float:

@@ -13,12 +13,13 @@ router = APIRouter()
 @router.get("/v1/models")
 async def list_models(
     request: Request,
+    refresh: bool = False,
     _: None = Depends(check_local_auth),
 ) -> dict[str, Any]:
     gateway = request.app.state.gateway
     settings = get_settings(request)
     try:
-        return await gateway.list_models()
+        return await gateway.list_models(refresh=refresh)
     except Exception as error:
         if settings.debug:
             request.app.state.logger.exception("model list failed")

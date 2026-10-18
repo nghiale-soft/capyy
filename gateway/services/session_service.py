@@ -17,6 +17,7 @@ from providers.freebuff import (
     SessionManager,
 )
 from gateway.core.config import Settings
+from .config_store import MariaDBConfigStore
 
 
 logger = logging.getLogger("gateway.services.session")
@@ -42,9 +43,22 @@ class SessionService:
     changes, the pool is rebuilt right away.
     """
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        config_store: MariaDBConfigStore | None = None,
+    ) -> None:
         self.settings = settings
+        self._config_store = config_store
         self._reload_lock = asyncio.Lock()
+        if config_store is not None:
+            tokens, active_index = config_store.load_ai_tokens_or_migrate(
+                "freebuff",
+                self.tokens_file,
+            )
+            self._token_config = {"tokens": tokens, "active_index": active_index}
+        else:
+            self._token_config = None
         self._tokens = self._load_tokens()
         self._active_index = self._read_active_index()
         self.pool = self._build_pool(self._tokens)
@@ -156,34 +170,40 @@ class SessionService:
         file_tokens = self._read_tokens_file()
         if file_tokens:
             logger.info(
-                "freebuff tokens loaded source=file count=%s",
+                "freebuff tokens loaded source=%s count=%s",
+                "database" if self._config_store is not None else "file",
                 len(file_tokens),
             )
             return file_tokens
         return ()
 
     def _read_tokens_file(self) -> tuple[str, ...]:
-        path = self.tokens_file
-        if not path.exists():
-            return ()
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
-            logger.warning("failed to read freebuff tokens file: %s", error)
-            return ()
+        if self._config_store is not None:
+            raw = self._token_config
+        else:
+            path = self.tokens_file
+            if not path.exists():
+                return ()
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                logger.warning("failed to read freebuff tokens file: %s", error)
+                return ()
         return _normalize_tokens(raw.get("tokens") if isinstance(raw, dict) else None)
 
     def _read_active_index(self) -> int:
         try:
-            raw = json.loads(self.tokens_file.read_text(encoding="utf-8"))
+            raw = (
+                self._token_config
+                if self._config_store is not None
+                else json.loads(self.tokens_file.read_text(encoding="utf-8"))
+            )
             value = raw.get("active_index", 0) if isinstance(raw, dict) else 0
             return max(0, int(value))
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             return 0
 
     def _write_tokens_file(self, tokens: tuple[str, ...]) -> None:
-        path = self.tokens_file
-        path.parent.mkdir(parents=True, exist_ok=True)
         if tokens:
             self._active_index %= len(tokens)
         payload = {
@@ -191,11 +211,17 @@ class SessionService:
             "tokens": list(tokens),
             "active_index": self._active_index,
         }
+        if self._config_store is not None:
+            self._config_store.save_ai_tokens("freebuff", list(tokens), self._active_index)
+            self._token_config = payload
+            return
+        path = self.tokens_file
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _persist_active_index(self, index: int) -> None:
         """Persist the sticky default without exposing token values in logs."""
-        if not self._tokens or self.token_source != "file":
+        if not self._tokens or self.token_source not in {"file", "database"}:
             return
         self._active_index = index % len(self._tokens)
         try:
@@ -207,7 +233,7 @@ class SessionService:
     @property
     def token_source(self) -> str:
         if self._read_tokens_file():
-            return "file"
+            return "database" if self._config_store is not None else "file"
         return "none"
 
     @property
@@ -269,6 +295,10 @@ class SessionService:
             await self._swap_pool(())
 
     async def _remove_tokens_file(self) -> None:
+        if self._config_store is not None:
+            self._token_config = {"version": 2, "tokens": [], "active_index": 0}
+            self._config_store.save_ai_tokens("freebuff", [], 0)
+            return
         path = self.tokens_file
         if path.exists():
             try:

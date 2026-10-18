@@ -24,8 +24,14 @@ Each provider needs configuration and metadata:
 
 ## Data sources
 
-- Provider config: JSON file at `config/providers.json` by default, controlled
-  by `AI_GATEWAY_PROVIDERS_FILE`.
+- Provider config: JSON file at `config/providers.json` in local mode, or the
+  `capyy.providers` and `capyy.provider_models` tables in shared Docker mode.
+- Provider credentials are individual rows in `capyy.ai_tokens`, keyed by
+  provider and position (for example, `freebuff`, `claude`, or `codex`); each
+  row records `created_at` and whether it is the provider's currently selected
+  token (`is_active`). The active index is also kept in `capyy.app_settings`
+  to preserve the ordered token-pool behavior.
+- Tool permissions are individual rows in `capyy.tool_permissions`.
 - Registry metadata: loaded from config + health checks.
 
 ## freebuff2api references

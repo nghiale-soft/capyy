@@ -64,6 +64,11 @@ class Settings:
     history_context_max_chars: int = 4000
     router_mode: str = "fallback"
     providers_file: str = "config/providers.json"
+    database_host: str | None = None
+    database_port: int = 3306
+    database_name: str = "capyy"
+    database_user: str = "root"
+    database_password: str | None = None
     # Local tool execution (agent loop). Freebuff free models reject requests that
     # carry `tools` (429 free-models-per-day-high-balance), so the gateway strips
     # them upstream and instead executes tools locally (read_file, bash, ...).
@@ -174,6 +179,11 @@ def load_settings() -> Settings:
         providers_file=os.getenv(
             "AI_GATEWAY_PROVIDERS_FILE", "config/providers.json"
         ),
+        database_host=os.getenv("CAPYY_DB_HOST"),
+        database_port=_int("CAPYY_DB_PORT", 3306),
+        database_name=os.getenv("CAPYY_DB_NAME", "capyy"),
+        database_user=os.getenv("CAPYY_DB_USER", "root"),
+        database_password=os.getenv("CAPYY_DB_PASSWORD"),
         tool_workdir=os.getenv("FREEBUFF_TOOL_WORKDIR", "."),
         tool_max_iterations=_int("FREEBUFF_TOOL_MAX_ITERATIONS", 8),
         tool_bash_enabled=_bool("FREEBUFF_TOOL_BASH_ENABLED", True),

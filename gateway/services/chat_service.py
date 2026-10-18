@@ -13,6 +13,7 @@ from providers.freebuff import (
     CodebuffError,
     FreebuffRun,
     is_waiting_room_required,
+    should_failover_account,
     utc_now_iso,
 )
 from gateway.compat.models import CONTEXT_PRUNER_AGENT_ID, FreebuffModel
@@ -131,24 +132,36 @@ async def prepare_freebuff_dispatch(
     construction have one implementation so their auth/429 behavior cannot
     drift.
     """
-    lease = await accounts.acquire_session(model_config.session_id, messages=messages)
-    try:
-        client = lease.client
-        await client.request_ad_chain(messages=messages)
-        await client.validate_agents()
-        run = await start_freebuff_run_chain(client, model_config)
-        payload = build_payload(
-            {**body, "messages": messages},
-            session=lease.session,
-            run=run,
-            client_id=settings.client_id,
-            upstream_model_id=model_config.upstream_id,
-            max_tokens_cap=settings.max_tokens,
-        )
-        return lease, client, run, payload
-    except Exception:
-        await lease.aclose()
-        raise
+    while True:
+        lease = await accounts.acquire_session(model_config.session_id, messages=messages)
+        try:
+            client = lease.client
+            await client.request_ad_chain(messages=messages)
+            await client.validate_agents()
+            run = await start_freebuff_run_chain(client, model_config)
+            payload = build_payload(
+                {**body, "messages": messages},
+                session=lease.session,
+                run=run,
+                client_id=settings.client_id,
+                upstream_model_id=model_config.upstream_id,
+                max_tokens_cap=settings.max_tokens,
+            )
+            return lease, client, run, payload
+        except CodebuffError as error:
+            if not should_failover_account(error):
+                await lease.aclose()
+                raise
+            lease.mark_rate_limited(settings.account_cooldown, error=error)
+            await lease.aclose()
+            logger.warning(
+                "freebuff dispatch preparation failed status=%s account=%s; trying next token",
+                error.status_code,
+                lease._account_index,
+            )
+        except Exception:
+            await lease.aclose()
+            raise
 
 
 async def _start_child_chat_run_chain(
@@ -372,7 +385,7 @@ async def chat_events_with_recovery(
             if (
                 failover is not None
                 and not emitted_upstream_chunk
-                and error.status_code in {401, 403, 429}
+                and should_failover_account(error)
             ):
                 logger.warning(
                     "chat upstream auth/quota failure before output; switching "
@@ -454,12 +467,12 @@ async def stream_openai_chunks(
             error,
             exc_info=debug,
         )
-        if error.status_code in {401, 403, 429} and fallback_stream is not None:
+        if should_failover_account(error) and fallback_stream is not None:
             logger.warning("freebuff token pool unavailable before response; trying next provider: %s", error)
             async for chunk in fallback_stream():
                 yield chunk
             return
-        if error.status_code in {401, 403, 429} and on_rate_limited is not None:
+        if should_failover_account(error) and on_rate_limited is not None:
             on_rate_limited(error)
         yield encode_sse(
             {
@@ -495,20 +508,21 @@ async def collect_completion(
     message_id: str | None = None
     accumulator = CompletionAccumulator(model)
     try:
-        async for line in chat_events_with_recovery(
-            client,
-            payload,
-            recover=dispatch_failover.recover_session if dispatch_failover else recover,
-            failover=dispatch_failover.failover if dispatch_failover else None,
-            debug=debug,
-        ):
-            data = decode_sse_data(line)
-            if data is None:
-                continue
-            if data == "[DONE]":
-                break
-            message_id = data.get("id") or message_id
-            accumulator.add(data)
+        async with asyncio.timeout(client.settings.request_timeout):
+            async for line in chat_events_with_recovery(
+                client,
+                payload,
+                recover=dispatch_failover.recover_session if dispatch_failover else recover,
+                failover=dispatch_failover.failover if dispatch_failover else None,
+                debug=debug,
+            ):
+                data = decode_sse_data(line)
+                if data is None:
+                    continue
+                if data == "[DONE]":
+                    break
+                message_id = data.get("id") or message_id
+                accumulator.add(data)
         response = accumulator.final_response()
         logger.info(
             "chat completion response run_id=%s message_id=%s content_chars=%s finish_reason=%s",
@@ -518,10 +532,15 @@ async def collect_completion(
             response["choices"][0].get("finish_reason"),
         )
         return response
+    except TimeoutError as error:
+        raise CodebuffError(
+            "Freebuff completion timed out before a complete response was received.",
+            504,
+        ) from error
     finally:
         active_client = dispatch_failover.client if dispatch_failover else client
         active_run = dispatch_failover.run if dispatch_failover else run
-        await finalize_run(active_client, active_run, message_id)
+        schedule_finalize_run(active_client, active_run, message_id)
 
 
 def new_assistant_state() -> dict[str, Any]:
@@ -1698,7 +1717,7 @@ async def stream_tool_agent_loop(
         response, client_call = task.result()
     except CodebuffError as error:
         if (
-            error.status_code in {401, 403, 429}
+            should_failover_account(error)
             and fallback_stream is not None
         ):
             logger.warning(
@@ -1709,7 +1728,7 @@ async def stream_tool_agent_loop(
                 yield chunk
             return
         if (
-            error.status_code in {401, 403, 429}
+            should_failover_account(error)
             and dispatch_failover is None
             and account_lease is not None
         ):

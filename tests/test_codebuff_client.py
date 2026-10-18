@@ -9,6 +9,7 @@ from providers.freebuff import (
     CODEBUFF_ACCEPT_ENCODING,
     CodebuffClient,
     CodebuffError,
+    _should_retry_response,
     _upstream_error,
 )
 from gateway.core.config import HAR_BROWSER_USER_AGENT
@@ -101,6 +102,35 @@ class CodebuffClientTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(captured["proxy"], "socks5://127.0.0.1:1080")
         self.assertFalse(captured["trust_env"])
+        self.assertEqual(captured["timeout"].read, settings.request_timeout)
+
+    def test_account_limited_rate_limits_are_not_retried(self) -> None:
+        response = httpx.Response(
+            429,
+            json={
+                "status": "spend_limited",
+                "verificationRequired": True,
+                "retryAfterMs": 600_000,
+            },
+        )
+        self.assertFalse(_should_retry_response("POST", response))
+
+        quota_response = httpx.Response(
+            429,
+            json={
+                "status": "rate_limited",
+                "resetAt": "2026-10-09T17:00:00.000Z",
+                "retryAfterMs": 26_000_000,
+            },
+        )
+        self.assertFalse(_should_retry_response("POST", quota_response))
+
+    def test_other_chat_rate_limits_remain_retryable(self) -> None:
+        response = httpx.Response(
+            429,
+            json={"message": "free-models-per-day-high-balance"},
+        )
+        self.assertTrue(_should_retry_response("POST", response))
 
     async def test_create_session_polls_queued_session_until_active(self) -> None:
         client = QueuedSessionClient()

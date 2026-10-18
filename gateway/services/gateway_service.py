@@ -103,15 +103,26 @@ class GatewayService:
             provider = self.registry.get(pid)
             if provider is None or self.is_freebuff(pid):
                 continue
-            try:
-                return await provider.chat(payload)
-            except GatewayProviderError as error:
-                logger.warning(
-                    "provider %s failed, trying next: %s",
-                    pid,
-                    error,
-                )
-                last_error = error
+            for attempt in range(3):
+                try:
+                    return await provider.chat(payload)
+                except GatewayProviderError as error:
+                    if error.status_code in (503, 429) and attempt < 2:
+                        logger.info(
+                            "provider %s returned %s, retrying attempt %d...",
+                            pid,
+                            error.status_code,
+                            attempt + 1,
+                        )
+                        await asyncio.sleep(1.5 * (attempt + 1))
+                        continue
+                    logger.warning(
+                        "provider %s failed, trying next: %s",
+                        pid,
+                        error,
+                    )
+                    last_error = error
+                    break
         if last_error is not None:
             raise last_error
         raise GatewayProviderError(
@@ -167,16 +178,18 @@ class GatewayService:
             payload["model"] = real_model
         return payload
 
-    async def list_models(self) -> dict[str, Any]:
+    async def list_models(self, refresh: bool = False) -> dict[str, Any]:
         """Aggregate model list from all providers.
 
-        Returned model ids are the provider model ids (freebuff model ids have
-        no prefix). Clients use these ids to route.
+        Returned model ids are the provider model ids.
         """
         data: list[dict[str, Any]] = []
         for provider_id, provider in self.registry.all().items():
             try:
-                models = await provider.models()
+                try:
+                    models = await provider.models(refresh=refresh)
+                except TypeError:
+                    models = await provider.models()
             except Exception:
                 logger.exception("failed to list models for provider %s", provider_id)
                 models = []

@@ -18,7 +18,12 @@ from ..deps import (
     provider_label,
 )
 from ..services.chat_history import inject_context
-from ..failover import FreebuffDispatchFailover, has_next_provider, should_fallback_to_next_provider
+from ..failover import (
+    FreebuffDispatchFailover,
+    has_next_provider,
+    is_freebuff_account_failure,
+    should_fallback_to_next_provider,
+)
 from ..services.chat_service import (
     build_payload,
     collect_completion,
@@ -301,7 +306,7 @@ async def _freebuff_chat(request: Request, body: dict[str, Any], settings: Any) 
             if (
                 lease is not None
                 and isinstance(error, CodebuffError)
-                and error.status_code in {401, 403, 429}
+                and is_freebuff_account_failure(error)
             ):
                 lease.mark_rate_limited(settings.account_cooldown, error=error)
             if (
@@ -393,7 +398,7 @@ async def _freebuff_chat(request: Request, body: dict[str, Any], settings: Any) 
         if (
             lease is not None
             and isinstance(error, CodebuffError)
-            and error.status_code in {401, 403, 429}
+            and is_freebuff_account_failure(error)
         ):
             lease.mark_rate_limited(settings.account_cooldown, error=error)
         if (

@@ -7,7 +7,12 @@ requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.115.0",
     "httpx[socks]>=0.28.0",
+    "numpy>=2.0.0",
+    "opencv-python-headless>=4.10.0",
+    "pillow>=13.0.0",
+    "PyMySQL>=1.1.1",
     "python-dotenv>=1.0.0",
+    "python-multipart>=0.0.9",
     "uvicorn[standard]>=0.34.0",
 ]
 

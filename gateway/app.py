@@ -13,14 +13,16 @@ from router import Router
 
 from .core.config import load_settings
 from .core.logging import configure_logging
-from .routes import chat, contributions, freebuff, health, history, messages, models, providers, tools
+from .routes import chat, contributions, freebuff, health, history, images, messages, models, providers, tools
 from .services.chat_history import ChatHistoryService
 from .services.history_scan import scan_local_history
 from .services.gateway_service import GatewayService
+from .services.image_service import ImageTranslationService
 from .services.provider_crud import ProviderCrudService
 from .services.session_service import SessionService
 from .services.tool_approval import ToolApprovalService
 from .services.contributions import Contributions
+from .services.config_store import create_config_store
 from .compat.models import resolve_model
 
 
@@ -31,9 +33,12 @@ logger = logging.getLogger("gateway.app")
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = load_settings()
     configure_logging(settings)
+    config_store = create_config_store(settings)
+    if config_store is not None:
+        config_store.initialize()
 
     # Provider CRUD + Registry + Router
-    crud = ProviderCrudService()
+    crud = ProviderCrudService(config_store=config_store)
 
     # Seed a FreeBuff provider so the dashboard is never empty. If the token
     # file exists the pool takes over; the provider entry itself is just a
@@ -57,13 +62,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     router = Router(registry, mode=settings.router_mode)
 
     # Freebuff account pool (giữ logic cũ)
-    accounts = SessionService(settings)
+    accounts = SessionService(settings, config_store=config_store)
 
     # Per-project chat history
     chat_history = ChatHistoryService(settings)
 
     # Tool approval (allow/ask/deny per tool; pending approvals via dashboard)
-    tool_approval = ToolApprovalService(settings)
+    tool_approval = ToolApprovalService(settings, config_store=config_store)
     contributions_service = Contributions(settings.contributions_file, settings.contribution_issue_repository)
 
     # Build registry từ config đã lưu; freebuff qua factory
@@ -119,6 +124,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.registry = registry
     app.state.router = router
     app.state.gateway = gateway
+    app.state.image_service = ImageTranslationService(gateway)
     app.state.reload_registry = _reload_registry
     app.state.logger = logger
 
@@ -155,6 +161,7 @@ def create_app() -> FastAPI:
     app.include_router(models.router)
     app.include_router(chat.router)
     app.include_router(messages.router)
+    app.include_router(images.router)
     app.include_router(providers.router)
     app.include_router(freebuff.router)
     app.include_router(history.router)

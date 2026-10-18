@@ -7,6 +7,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
+from .config_store import MariaDBConfigStore
 
 logger = logging.getLogger("gateway.services.provider_crud")
 
@@ -53,11 +54,16 @@ class ProviderCrudService:
     Thread-safe via a Lock. Each change rewrites the whole file for simplicity.
     """
 
-    def __init__(self, path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        path: str | Path | None = None,
+        config_store: MariaDBConfigStore | None = None,
+    ) -> None:
         self._lock = Lock()
         self._path = Path(
             path or DEFAULT_CONFIG_PATH
         )
+        self._config_store = config_store
         self._providers: dict[str, ProviderConfig] = {}
         self._load()
 
@@ -66,10 +72,17 @@ class ProviderCrudService:
         return self._path
 
     def _load(self) -> None:
-        if not self._path.exists():
+        if self._config_store is not None:
+            raw = self._config_store.load_providers_or_migrate(self._path)
+        elif self._path.exists():
+            try:
+                raw = json.loads(self._path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError) as error:
+                logger.warning("failed to load providers file: %s", error)
+                return
+        else:
             return
         try:
-            raw = json.loads(self._path.read_text(encoding="utf-8"))
             items = raw.get("providers") if isinstance(raw, dict) else raw
             if not isinstance(items, list):
                 return
@@ -113,10 +126,22 @@ class ProviderCrudService:
         except (json.JSONDecodeError, OSError) as error:
             logger.warning("failed to load providers file: %s", error)
 
-    def _save(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+    def _save(
+        self,
+        *,
+        credential_updates: dict[str, str] | None = None,
+        credentials_to_delete: list[str] | None = None,
+    ) -> None:
         items = [asdict(p) for p in self._providers.values()]
+        if self._config_store is not None:
+            self._config_store.save_providers(
+                items,
+                credential_updates=credential_updates,
+                credentials_to_delete=credentials_to_delete,
+            )
+            return
         payload = {"version": 1, "providers": items}
+        self._path.parent.mkdir(parents=True, exist_ok=True)
         self._path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -158,7 +183,11 @@ class ProviderCrudService:
                 raise ValueError(f"provider '{cfg.id}' already exists")
             cfg.default = False
             self._providers[cfg.id] = cfg
-            self._save()
+            self._save(
+                credential_updates={cfg.id: cfg.api_key}
+                if cfg.api_key
+                else None
+            )
             return cfg
 
     def update(
@@ -178,7 +207,11 @@ class ProviderCrudService:
                 else:
                     existing.extra[key] = value
             existing.default = False
-            self._save()
+            self._save(
+                credential_updates={provider_id: existing.api_key}
+                if "api_key" in changes and existing.api_key
+                else None
+            )
             return existing
 
     def delete(self, provider_id: str) -> None:
@@ -186,7 +219,7 @@ class ProviderCrudService:
             if provider_id not in self._providers:
                 raise KeyError(f"provider '{provider_id}' not found")
             del self._providers[provider_id]
-            self._save()
+            self._save(credentials_to_delete=[provider_id])
 
     def default_provider(self) -> ProviderConfig | None:
         with self._lock:

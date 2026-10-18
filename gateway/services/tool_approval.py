@@ -23,6 +23,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from .config_store import MariaDBConfigStore
+
 logger = logging.getLogger("gateway.services.tool_approval")
 
 TOOL_MODES = ("allow", "ask", "deny")
@@ -167,8 +169,13 @@ def _summarize_args(tool: str, arguments: dict[str, Any]) -> str:
 
 
 class ToolApprovalService:
-    def __init__(self, settings: Any) -> None:
+    def __init__(
+        self,
+        settings: Any,
+        config_store: MariaDBConfigStore | None = None,
+    ) -> None:
         self.settings = settings
+        self._config_store = config_store
         self.permissions_file = Path(settings.tool_permissions_file)
         self._permissions: dict[str, str] = dict(DEFAULT_PERMISSIONS)
         self._pending: dict[str, dict[str, Any]] = {}
@@ -181,10 +188,15 @@ class ToolApprovalService:
     # ------------------------------------------------------------------
 
     def _load_permissions(self) -> None:
-        try:
-            data = json.loads(self.permissions_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return
+        if self._config_store is not None:
+            data = self._config_store.load_tool_permissions_or_migrate(
+                self.permissions_file
+            )
+        else:
+            try:
+                data = json.loads(self.permissions_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return
         if not isinstance(data, dict):
             return
         for tool, mode in data.items():
@@ -192,6 +204,9 @@ class ToolApprovalService:
                 self._permissions[str(tool)] = mode
 
     def _save_permissions(self) -> None:
+        if self._config_store is not None:
+            self._config_store.save_tool_permissions(self._permissions)
+            return
         try:
             self.permissions_file.parent.mkdir(parents=True, exist_ok=True)
             self.permissions_file.write_text(

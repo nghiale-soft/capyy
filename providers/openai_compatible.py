@@ -73,6 +73,8 @@ class OpenAICompatibleProvider(Provider):
         """Gọi chat completions non-stream."""
         url = self._chat_url()
         body = dict(payload)
+        if (not body.get("model") or body.get("model") in ("default", "gemini")) and self._models:
+            body["model"] = self._models[0]
         body["stream"] = False
         try:
             response = await self._client.post(
@@ -96,6 +98,8 @@ class OpenAICompatibleProvider(Provider):
         """Gọi chat completions stream, trả về từng dòng SSE."""
         url = self._chat_url()
         body = dict(payload)
+        if (not body.get("model") or body.get("model") in ("default", "gemini")) and self._models:
+            body["model"] = self._models[0]
         body["stream"] = True
         try:
             async with self._client.stream(
@@ -120,26 +124,32 @@ class OpenAICompatibleProvider(Provider):
                 f"provider {self.id} request failed: {error}"
             ) from error
 
-    async def models(self) -> list[str]:
-        """Return the model list from config (and try fetching from the API if possible)."""
-        if self._models:
+    async def models(self, refresh: bool = False) -> list[str]:
+        """Return the model list from config (or live fetch from API if refresh=True or models empty)."""
+        if self._models and not refresh:
             return list(self._models)
-        # Fallback: fetch từ /models endpoint nếu có
+        # Fetch từ /models endpoint nếu refresh=True hoặc không có model cấu hình
         try:
             response = await self._client.get(
                 self._models_url(),
                 headers=self._headers(),
+                timeout=10.0,
             )
-            if response.status_code >= 400:
-                return []
-            data = response.json()
-            ids = []
-            for item in data.get("data") or []:
-                if isinstance(item, dict) and item.get("id"):
-                    ids.append(str(item["id"]))
-            return ids
-        except Exception:
-            return []
+            if response.status_code < 400:
+                data = response.json()
+                ids: list[str] = []
+                for item in data.get("data") or []:
+                    if isinstance(item, dict) and item.get("id"):
+                        raw_id = str(item["id"])
+                        clean_id = raw_id.removeprefix("models/")
+                        if clean_id not in ids:
+                            ids.append(clean_id)
+                if ids:
+                    return ids
+        except Exception as error:
+            logger.warning("failed to fetch models for provider %s: %s", self.id, error)
+
+        return list(self._models)
 
     async def health(self) -> bool:
         """Kiểm tra sức khỏe provider bằng GET /models (hoặc base_url)."""

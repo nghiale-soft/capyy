@@ -21,10 +21,11 @@
 - Dashboard: `FREEBUFF_DASHBOARD_ENABLED`, `FREEBUFF_DASHBOARD_HOST`, and
   `FREEBUFF_DASHBOARD_PORT` (default `0.0.0.0:2222`).
 - Provider configuration: `AI_GATEWAY_PROVIDERS_FILE`, default
-  `config/providers.json`.
-- Persistent FreeBuff tokens: Dashboard-managed `config/freebuff-tokens.json`,
-  mounted through the Docker config volume.
-  `config/freebuff-tokens.json`.
+  `config/providers.json` in local file mode. Shared Docker mode stores
+  providers, provider models, FreeBuff tokens, and tool permissions in
+  separate relational tables in the `capyy` schema.
+- Shared database: the existing `mariadb_data` Docker volume is served by
+  `common-docker.yml`; Capyy uses the `capyy` schema.
 - Chat history: `FREEBUFF_HISTORY_*`; tool behavior: `FREEBUFF_TOOL_*`.
 
 `config/providers/freebuff.yaml` is a seed/example artifact, not the default

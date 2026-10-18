@@ -26,4 +26,5 @@ ai-gateway-provider/
 
 Runtime state is intentionally outside source control: provider configuration,
 token files, tool permissions, and chat history are written under `config/` or
-`data/` and mounted through Docker named volumes.
+`data/`; Docker Compose bind-mounts the runtime config and app data from
+`data/config/` and `data/app/`.

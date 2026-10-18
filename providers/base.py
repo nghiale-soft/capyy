@@ -22,7 +22,7 @@ class Provider(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def models(self) -> list[str]:
+    def models(self, refresh: bool = False) -> list[str]:
         """Models supported by this provider."""
         raise NotImplementedError
 

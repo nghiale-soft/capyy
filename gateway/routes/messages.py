@@ -24,7 +24,12 @@ from ..core.logging import log_curl, redact_headers, render_debug
 from ..core.sse import decode_sse_data
 from ..deps import check_local_auth, detect_client, get_settings, provider_label
 from ..services.chat_history import inject_context
-from ..failover import FreebuffDispatchFailover, has_next_provider, should_fallback_to_next_provider
+from ..failover import (
+    FreebuffDispatchFailover,
+    has_next_provider,
+    is_freebuff_account_failure,
+    should_fallback_to_next_provider,
+)
 from ..services.chat_service import (
     _accumulate_assistant_parts,
     _log_assistant_marker_leak,
@@ -285,7 +290,7 @@ async def anthropic_messages(
         # begins, so it is still safe to continue down the registry priority
         # chain. GatewayService skips the failed FreeBuff adapter and tries the
         # next OpenAI-compatible provider.
-        if error.status_code in {401, 403, 429}:
+        if is_freebuff_account_failure(error):
             if not has_next_provider(gateway):
                 _contribution_reporter(request)(
                     "provider",
@@ -417,7 +422,7 @@ async def anthropic_messages(
                 dispatch_failover=dispatch_failover,
             )
         except CodebuffError as error:
-            if lease is not None and error.status_code in {401, 403, 429}:
+            if lease is not None and is_freebuff_account_failure(error):
                 lease.mark_rate_limited(settings.account_cooldown, error=error)
             if should_fallback_to_next_provider(gateway, error):
                 logger.warning("freebuff token pool unavailable; trying next provider")
@@ -526,7 +531,7 @@ async def anthropic_messages(
             },
         )
     except CodebuffError as error:
-        if lease is not None and error.status_code in {401, 403, 429}:
+        if lease is not None and is_freebuff_account_failure(error):
             lease.mark_rate_limited(settings.account_cooldown, error=error)
         if should_fallback_to_next_provider(gateway, error):
             logger.warning("freebuff token pool unavailable; trying next provider")
@@ -748,7 +753,7 @@ async def _stream_anthropic_chunks(
         _label = _ERROR_LABELS.get(error.status_code, f"⚠️ Provider error (HTTP {error.status_code})")
         for chunk in _sse_status(state, requested_model, _label):
             yield chunk
-        if error.status_code in {401, 403, 429} and on_rate_limited is not None:
+        if is_freebuff_account_failure(error) and on_rate_limited is not None:
             on_rate_limited(error)
         yield encode_anthropic_sse(
             "error",
@@ -921,7 +926,7 @@ async def _stream_tool_loop_anthropic(
         for _ev, _ev_data in progress_events("status", _label):
             yield encode_anthropic_sse(_ev, _ev_data)
         if (
-            error.status_code in {401, 403, 429}
+            is_freebuff_account_failure(error)
             and fallback_stream is not None
         ):
             logger.warning("freebuff token pool unavailable; trying next provider")
@@ -944,7 +949,7 @@ async def _stream_tool_loop_anthropic(
                 yield encode_anthropic_sse(event, event_data)
             return
         if (
-            error.status_code in {401, 403, 429}
+            is_freebuff_account_failure(error)
             and dispatch_failover is None
             and on_rate_limited is not None
         ):

@@ -1,430 +1,258 @@
-# Capyy
+# Capyy AI Gateway
 
 <img src="tool/web/static/capyy.png" alt="Capyy" width="120">
 
-> A calm bridge between AI agents, local tools, MCP servers, and AI providers.
+> Cổng AI trung tâm hợp nhất (Unified AI Gateway) cho toàn bộ ứng dụng trên máy Mac và các dịch vụ microservice trong Docker (`common-service`).
 
-## Goal
+---
 
-Capyy is a unified gateway layer for AI agents and providers. Clients only need
-to configure a Base URL, API Key, and Model. The gateway decides how to route
-to the right provider, with fallback when needed.
+## 🚀 1. Thông số kết nối nhanh (Quick Connection)
 
-## Supported
+Mọi ứng dụng (App dịch thuật, Chatbot, Backend microservice, CLI tool...) chỉ cần cấu hình theo chuẩn **OpenAI**:
 
--   OpenAI API
--   Anthropic API
--   Freebuff
--   OpenAI
--   Claude
--   Gemini
--   OpenRouter
--   Ollama
--   Blackbox API
--   LM Studio
--   Codex CLI
--   Claude Code CLI
+| Thông số | Dành cho App trên máy Host (Mac) | Dành cho Container trong Docker |
+| :--- | :--- | :--- |
+| **Base URL** | `http://localhost:1221/v1` | `http://capyy:1221/v1` |
+| **API Key** | `local-key` (hoặc chuỗi bất kỳ) | `local-key` (hoặc chuỗi bất kỳ) |
+| **Model** | `gemini-3.5-flash-lite` (hoặc để trống) | `gemini-3.5-flash-lite` (hoặc để trống) |
+| **Dashboard** | `http://localhost:2222` | `http://capyy:2222` |
 
-## API
+> 💡 **Tự động gán Model:** Nếu request không truyền `model` hoặc truyền `"default"`, Capyy sẽ tự động định tuyến đến model tối ưu nhất hiện tại (`gemini-3.5-flash-lite`).
 
--   POST /v1/chat/completions
--   POST /v1/messages
--   GET /v1/models
--   GET /healthz
+---
 
-The API listens on port `1221` by default. The management dashboard is served
-separately on port `2222`; see [Dashboard web](#dashboard-web-separate-port).
+## 📡 2. Danh sách API Endpoints
 
-## Quick start
+Capyy hỗ trợ đầy đủ cả 2 chuẩn giao tiếp phổ biến nhất thế giới hiện nay:
 
-### Prerequisites
+### 2.1. `POST /v1/chat/completions` (Chuẩn OpenAI)
+Dành cho các ứng dụng dịch thuật, web chat, SDK OpenAI.
 
-- Docker Desktop (or Docker Engine with the Compose plugin)
-- A FreeBuff token or another OpenAI-compatible provider, configured after
-  startup from the Dashboard
-
-### Start with Docker
-
+- **Non-streaming (JSON):**
 ```bash
-git clone https://github.com/nghiale-soft/capyy.git
-cd capyy
-
-# `gateway-data` is an existing external volume in the compose file. This is
-# a no-op when it already exists and preserves existing chat history.
-docker volume create gateway-data
-
-docker compose up -d --build
-docker compose ps
-curl -fsS http://localhost:1221/healthz
-```
-
-Open the Dashboard at <http://localhost:2222/> and add/configure providers.
-Provider credentials are entered there and stored in Docker volumes; do not
-put them in the repository or a committed `.env` file.
-
-### Use the API
-
-Configure a client with a Base URL of `http://localhost:1221`, any non-empty
-API key accepted by your client, and the model it wants to request. The client
-selects the model per request; provider priority and failover are managed by
-Capyy.
-
-```bash
-curl http://localhost:1221/v1/models
-
-curl http://localhost:1221/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -H 'Authorization: Bearer local-key' \
+curl -X POST http://localhost:1221/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer local-key" \
   -d '{
-    "model": "deepseek/deepseek-v4-flash",
-    "messages": [{"role": "user", "content": "Hello"}]
+    "model": "gemini-3.5-flash-lite",
+    "messages": [
+      {"role": "user", "content": "Dịch sang tiếng Việt: Hello world!"}
+    ]
   }'
 ```
 
-### Operate and update
-
+- **Streaming SSE (`"stream": true`):**
 ```bash
-# Follow gateway logs
-docker compose logs -f capyy
-
-# Rebuild after a source update, then replace the running container
-docker compose up -d --build --force-recreate
-
-# Stop containers but keep provider settings and chat history
-docker compose down
-
-# Destructive: remove containers and named volumes, including history/tokens
-docker compose down -v
+curl -N -X POST http://localhost:1221/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer local-key" \
+  -d '{
+    "model": "gemini-3.5-flash-lite",
+    "stream": true,
+    "messages": [
+      {"role": "user", "content": "Kể 1 câu chuyện vui ngắn"}
+    ]
+  }'
 ```
 
-If `curl /healthz` succeeds but a chat request fails, open **Dashboard →
-Providers** to inspect provider/token state and test connectivity. Capyy tries
-enabled providers in priority order; a FreeBuff provider tries its healthy
-tokens before failing over to the next provider.
+### 2.2. `GET /v1/models` (Danh sách Model)
+- **Lấy danh sách model đã cấu hình (siêu nhanh):**
+  ```bash
+  curl http://localhost:1221/v1/models
+  ```
+- **Live Fetch trực tiếp từ Provider (`?refresh=true`):**
+  Gọi thời gian thực sang nhà cung cấp để quét toàn bộ model mới nhất:
+  ```bash
+  curl "http://localhost:1221/v1/models?refresh=true"
+  ```
 
-## Community contributions
+### 2.3. `POST /v1/images/translate` (Dịch và Thay thế Chữ trên Ảnh Sản Phẩm)
+Tự động OCR nhận diện tọa độ chữ, dịch sang Tiếng Việt (hoặc ngôn ngữ tùy chọn), xóa nền chữ gốc và chèn chữ tiếng Việt bằng font chuẩn (Roboto) vào thẳng ảnh.
+* **Chi phí:** Gần như **0 đồng** (tận dụng Gemini Vision Free Tier 1.500 req/ngày, chỉ ~400 text tokens thay vì gen ảnh đắt đỏ).
+* **Độ chính xác:** Giữ nguyên 100% hình ảnh sản phẩm thực tế, không bị méo mó hay vẽ sai chi tiết.
 
-When Capyy identifies a repairable problem, Dashboard → Settings can show a
-privacy-safe issue draft. It can describe a tool protocol, provider, history,
-or dashboard problem using only bounded diagnostic metadata. Nothing is sent
-until the user chooses **Approve & open Issue**, then submits the prefilled
-GitHub Issue themselves. Prompts, source, file paths, commands, tool output,
-tokens, and credentials are never included.
-
-## Architecture
-
-Client → API Layer → Router → Registry → Providers
-
-## Layout
-
-    gateway/
-    providers/
-    registry/
-    router/
-    scheduler/
-    judge/
-    config/providers/
-
-### Provider
-
-Each provider must implement:
-
--   chat()
--   stream_chat()
--   models()
--   health()
-
-### Registry
-
-Scans all providers at startup and registers:
-
--   model
--   capability
--   cost
--   latency
--   quota
--   health
--   context
--   tool support
-
-### Router
-
-Routes based only on the Registry.
-
-Modes:
-
--   strict
--   fallback
--   auto
-
-### Scheduler
-
--   Health
--   Quota
--   Circuit Breaker
-
-### Judge
-
-Currently only an abstraction; not yet AI-integrated.
-
-## Freebuff configuration (reduce daily-quota 429s)
-
-- **Multiple accounts:** add each account in **Dashboard → Freebuff Tokens**.
-  The gateway builds an account pool and when an account gets a 429 from upstream
-  (`free-models-per-day-high-balance`) it automatically **cooldowns** that
-  account and switches to another one.
-  Each account owns one active upstream session/run at a time: concurrent
-  requests borrow the next *idle* healthy account rather than sharing a
-  session. A lower-priority provider is a resilience fallback only; it is not
-  used for load balancing while this provider still has a healthy-but-busy
-  account. When only one account remains healthy, later requests wait for that
-  account's lease to be released.
-- `FREEBUFF_MAX_TOKENS=8192` — cap `max_tokens` within the daily quota (Claude
-  Code asks for 32000 by default, which often triggers 429). `0` = no cap.
-- `FREEBUFF_RETRY_ATTEMPTS=4`, `FREEBUFF_RETRY_BASE_DELAY=1.0`,
-  `FREEBUFF_RETRY_MAX_DELAY=10.0` — auto-retry 429/5xx; retried 429s also step
-  down `max_tokens` (32000→16000→8000…).
-- `FREEBUFF_ACCOUNT_COOLDOWN=60.0` — cooldown (seconds) for a 429'd account.
-- `FREEBUFF_AD_PROVIDERS=gravity,carbon` — valid upstream ad providers.
-- Upstream 4xx (e.g. 429) is passed through to the client as-is, so Claude
-  Code retries with its own rate-limit logic instead of seeing a generic 502.
-
-**Configure tokens from the dashboard (no `.env` editing):**
-
-- The dashboard web runs on its **own port** (default **2222**), not on a path
-  of the API port: open `http://localhost:2222/`. The *🔑 Freebuff Tokens*
-  screen shows the configured accounts (masked) and lets you **add one token
-  at a time** or delete any account. Tokens are written to
-  `config/freebuff-tokens.json` (gitignored) and the account pool reloads
-  immediately.
-- **Storage:** `freebuff-tokens.json` is the only token source. It is
-  gitignored and is retained in the Docker config volume.
-- API: `GET /api/freebuff/tokens` (status + masked tokens),
-  `POST /api/freebuff/tokens` `{"token": "..."}` (add one),
-  `PUT /api/freebuff/tokens` `{"tokens": ["a","b"]}` (replace),
-  `DELETE /api/freebuff/tokens/{index}` (remove one),
-  `DELETE /api/freebuff/tokens` (clear all Dashboard tokens).
-- In Docker use `docker compose up -d` — volumes are auto-mounted (see
-  *Docker Compose* below), so tokens survive recreate.
-- ⚠️ When tokens change mid-flight, the account pool is rebuilt immediately —
-  requests/streams running on an old account may be interrupted (the trade-off
-  of hot reload). Best done during low traffic.
-
-### Local tool execution (Claude Code / Codex / tool-calling clients)
-
-Freebuff free models **reject any request that carries `tools`** with a 429
-(`free-models-per-day-high-balance`) — which is why the Claude VSCode
-extension (always sends `read_file`/`bash`/`glob`) failed with 429 while
-Postman worked. Two fixes are built in:
-
-1. **Strip tools upstream:** `tools`, `tool_choice` and `parallel_tool_calls`
-   are removed from the payload forwarded to Freebuff, so the request is
-   always accepted (429 gone).
-2. **Local agent loop:** the gateway executes the tools itself. When a
-   request carries `tools`, the gateway runs an agent loop: ask the model →
-   parse its `<<<TOOL_CALL>>>` → execute the tool locally → feed the result
-   back → repeat until the model answers without tools. The final answer is
-   streamed to the client in the normal OpenAI/Anthropic SSE format.
-
-**Available tools** (sandboxed to `FREEBUFF_TOOL_WORKDIR`, default `.`):
-
-Filesystem & shell:
-
-- `read_file(path)` / `read_file_lines(path, start, end?)` — read a file / a line range
-- `write_file(path, content)` / `edit_file(path, old_string, new_string, replace_all?)` — write / targeted edit (both ask approval)
-- `list_dir(path)` / `glob(pattern)` — directory listing / glob
-- `grep(pattern, path?)` — regex search
-- `bash(command)` — shell command (opt-out with `FREEBUFF_TOOL_BASH_ENABLED=false`; asks approval by default)
-- `git_status()` / `git_diff(path?)` — git state / diff
-
-Pure helpers (always allowed):
-
-- `http_get(url)` — fetch a URL (asks approval; network access)
-- `base64_encode(text)` / `base64_decode(text)` / `url_encode(text)` / `url_decode(text)`
-- `uuid()` / `timestamp()` / `json_parse(text)`
-
-Browser automation is intentionally delegated to an MCP server running in the
-client (for example Chrome DevTools MCP in Claude). This keeps Chromium and its
-Linux dependencies out of the gateway image; the resulting DOM text or image
-tool result is sent back through the client conversation.
-
-Figma (configured on the Dashboard, no file editing needed):
-
-- `figma_get_file(file_key)` / `figma_get_node(file_key, node_id)` / `figma_export_image(file_key, node_id)` — read design files (ask approval)
-- **Tokens:** Dashboard → *Settings → Figma tokens* — set a **default** token,
-  or a **per-project** token (each project/workspace can carry its own).
-  Stored in `config/figma-tokens.json`
-  (`{"default": "...", "projects": {"<project-key>": "..."}}`, gitignored).
-  Resolution order: project token → default → legacy `config/figma-token.json`
-  → `FIGMA_TOKEN` env. The figma tools automatically pick the token of the
-  current project (chat-history project key).
-
-**Tool permissions** apply to every tool above — new browser/figma tools default
-to **Ask**, helpers to **Allow** — and the Dashboard Settings list updates
-automatically from the backend labels.
-
-**Security notes:**
-
-- Paths are resolved against `FREEBUFF_TOOL_WORKDIR`; `..` traversal outside
-  the workdir is blocked and reported back to the model as an error.
-- `FREEBUFF_TOOL_MAX_ITERATIONS=8` — max model↔tool round trips (safety
-  bound against infinite loops).
-- `FREEBUFF_TOOL_COMMAND_TIMEOUT=30.0` — per-command timeout (seconds).
-- `FREEBUFF_TOOL_OUTPUT_CAP=50000` / `FREEBUFF_TOOL_FILE_CAP=100000` —
-  output/read caps in characters; long results are truncated with a notice.
-
-**Tool approvals (Dashboard → Settings):**
-
-Each tool has a mode — **Allow** (run immediately), **Ask** (pause and wait
-for your approval on the Dashboard), **Deny** (block). Defaults: read-only
-tools (read_file/list_dir/glob/grep) = Allow; write_file and bash = Ask.
-
-- Modes are persisted in `config/tool-permissions.json` (gitignored) and are
-  editable in the Dashboard → *Settings → Tool permissions*.
-- When a tool in "Ask" mode is called, the agent loop pauses and a **pending
-  approval** appears on the Dashboard (sidebar badge with a red counter; list
-  with Approve/Deny buttons). The write_file approval previews the first line
-  of the content so you know what will be written.
-- `FREEBUFF_TOOL_APPROVAL_TIMEOUT=120.0` — seconds to wait before the tool
-  call is auto-denied (timeout message is fed back to the model).
-- API: `GET/PUT /api/tools/permissions`, `GET /api/tools/pending`,
-  `POST /api/tools/pending/{id}/approve|deny`.
-
-### Dashboard web (separate port)
-
-- Dashboard runs on a **separate port** from the API:
-  `FREEBUFF_DASHBOARD_PORT=2222` (default 2222); set
-  `FREEBUFF_DASHBOARD_ENABLED=false` to disable.
-- The API port (1221) no longer serves UI on paths.
-- The dashboard proxies every `/api/*` to the gateway — no CORS needed, no
-  secrets leak into HTML.
-- Docker: publish `-p 2222:2222`.
-
-### Docker Compose
-
+#### A. Gửi file ảnh (Multipart Form-Data - Nhận về trực tiếp file ảnh JPEG):
 ```bash
-# Create once for a fresh install; it is a no-op when the volume exists.
-docker volume create gateway-data
-docker compose up -d --build
+curl -X POST http://localhost:1221/v1/images/translate \
+  -H "Authorization: Bearer local-key" \
+  -F "file=@san-pham-1688.jpg" \
+  -F "target_language=Vietnamese" \
+  -o translated_product.jpg
 ```
 
-Volumes are declared in `docker-compose.yml`, **no manual `-v` mounting**:
+#### B. Gửi JSON với Base64 / URL ảnh (Nhận JSON chứa Base64 + Bounding Boxes):
+```bash
+curl -X POST http://localhost:1221/v1/images/translate \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer local-key" \
+  -d '{
+    "image_url": "https://example.com/product.jpg",
+    "target_language": "Vietnamese",
+    "response_format": "json"
+  }'
+```
 
-| Volume | Mount | Content |
-|---|---|---|
-| `gateway-config` | `/app/config` | `freebuff-tokens.json`, `providers.json` |
-| `gateway-data` | `/app/data` | per-project chat history (`data/chat_history`) |
+Response JSON:
+```json
+{
+  "data": {
+    "image_base64": "data:image/jpeg;base64,...",
+    "format": "jpeg",
+    "regions_count": 8,
+    "regions": [
+      {
+        "box_2d": [75, 43, 140, 295],
+        "original_text": "咖啡色",
+        "translated_text": "Màu cà phê",
+        "bg_color_hex": "#b56943",
+        "text_color_hex": "#ffffff",
+        "align_h": "center",
+        "align_v": "center",
+        "group_id": "color_options",
+        "rotation_deg": 0,
+        "bold": true
+      }
+    ]
+  }
+}
+```
 
-- Container runs as user `appuser` (uid 1000); volumes inherit ownership from
-  the image so the gateway can write immediately — no permission errors.
-- Data lives in named volumes and survives recreate/upgrade. Full reset:
-  `docker compose down -v`.
-- Add provider tokens only through the Dashboard; `.env` is not used for
-  Freebuff authentication.
-- `~/.claude` and `~/.codex` are mounted **read-only** so the dashboard scan
-  feature can read your local AI history inside the container.
+* 🚀 **Bộ Thuật Toán & Tính Năng Đồ Họa Thông Minh:**
+  * **Đo độ nghiêng tự động bằng CV thuần (`cv2.fitLine` & PCA):** Tự động phát hiện các nét ký tự gốc, lọc bỏ nhiễu biên và dùng thuật toán khớp đường thẳng L2 distance để tính góc nghiêng vật lý thực tế ($\theta = -\operatorname{degrees}(\arctan2(vy, vx))$). Đồng bộ góc nghiêng trung vị cho toàn bộ Speech Bubbles, loại bỏ hoàn toàn việc đoán mò góc nghiêng của AI.
+  * **Căn chỉnh tỷ lệ font chữ Bao bì sản phẩm (`is_packaging`):** Khóa cứng định dạng 1 dòng (single-line) và tự động đo chiều cao ký tự gốc (`orig_glyph_h`) để co giãn font chữ La-tinh theo tỷ lệ vàng ($0.60 \times \text{glyph\_h}$). Chữ nằm gọn gàng, thanh mảnh trong dải bao bì, không làm vỡ bố cục, không đè lên nơ hay chi tiết trang trí.
+  * **Tẩy xóa nét chữ tự nhiên (Context-Aware Inpainting) & Phủ hạt noise (Film Grain Injection):** Tự động phát hiện mask nét chữ gốc bằng Otsu thresholding và dùng thuật toán OpenCV Telea bù đắp màu nền xung quanh. Tự động đo độ lệch chuẩn texture để tiêm hạt noise Gaussian, loại bỏ hoàn toàn hiện tượng bệt màu mờ nhựa (plastic/waxy blur), bảo toàn 100% texture gỗ, tường và dải gradient.
+  * **Bảo vệ Icon & Tránh tràn viền thông minh (Anti-Overflow & Icon Protection):** Tự động nhận diện huy hiệu chứa icon bên trái để giữ nguyên 100% icon. Áp dụng lề an toàn động ($\ge 12\%$ cho bong bóng thoại, bảo vệ mép biên màn hình), đảm bảo text không bao giờ chạm viền.
+  * **Hiệu ứng đồ họa CSS & Typography cao cấp:** Hỗ trợ gradient đa điểm (vàng-cam, ánh kim bronze metallic), viền chữ tương phản (stroke outline), bóng đổ 3D (drop-shadow), và tự động chuyển đổi giữa Sans-serif (Roboto) hiện đại và Serif (Georgia) sang trọng.
+  * **Đồng bộ Font Size theo nhóm (`group_id`):** Các label có cùng `group_id` (ví dụ 4 nút tính năng) sẽ tự động dùng chung cỡ font nhỏ nhất trong nhóm để giao diện đồng bộ 100%.
+  * **Căn chỉnh 2 chiều (`align_h`, `align_v`):** Tự động căn giữa, trái, phải, trên, dưới tương ứng theo vị trí nút hoặc banner.
 
-### Per-project chat history
+### 2.4. `GET /healthz` (Health Check)
+```bash
+curl http://localhost:1221/healthz
+# Trả về: {"status": "ok"}
+```
 
-The gateway stores conversations (user/assistant) per project in
-`data/chat_history/projects/<project-key>/sessions/<session-id>.jsonl` and **remembers past
-conversations** when you ask questions like *"do you remember the 429 issue
-last time?"*:
+---
 
-- **Full fidelity like Claude/Codex:** each line stores **content**,
-  **thinking** (model reasoning) and **tool calls** (name + arguments) — all
-  viewable on the Dashboard.
-- **Project mapping:** one file per project. The project key is stable, based
-  on the **git remote URL** when available, otherwise the folder name. The
-  index `data/chat_history/projects.json` records every path ever seen, so
-  when a **folder is renamed or moved**, old history is still merged back into
-  the same project (nothing is lost).
-- **Clients declare the project:** send header `x-project-path:
-  /path/to/project` (or `x-project-id`) on chat requests; otherwise the
-  gateway looks in `metadata` of the body (cwd/project_path/workspace). If
-  nothing is found, it falls back to the `default` project.
-- **Recall:** the gateway injects a bounded tail of the current session. When
-  more context is genuinely needed, the model can use the read-only virtual
-  tools `history_projects`, `history_sessions`, and `history_read` to browse
-  project/session history page by page. These tools expose no Docker or host
-  paths and every lookup is audit-logged without transcript content.
-- **Retention: 1 year max:** rows older than
-  `FREEBUFF_HISTORY_MAX_AGE_DAYS=365` are pruned automatically.
-- Config: `FREEBUFF_HISTORY_DIR=data/chat_history`,
-  `FREEBUFF_HISTORY_INJECT_MODE=memory_only` (keeps bounded current-session
-  context), `always` or `off`,
-  `FREEBUFF_HISTORY_CONTEXT_MAX_CHARS=4000`.
+## 🛠 3. Hướng dẫn tích hợp cho từng App
 
-### Optional collapsible FreeBuff reasoning (MCP experiment)
+### 3.1. Ứng dụng Dịch thuật (Bob, Immersive Translate, PopClip)
+- **Loại dịch vụ / Dịch vụ tùy chỉnh:** Chọn `OpenAI` hoặc `OpenAI-compatible`.
+- **API URL / Host:** `http://localhost:1221/v1` (hoặc `http://localhost:1221/v1/chat/completions` tùy app).
+- **API Key:** `local-key`.
+- **Model:** `gemini-3.5-flash-lite`.
 
-`tool/mcp/capyy_reasoning_mcp.py` is a zero-permission, host-side MCP server
-with one tool: `show_reasoning(text)`. It lets a client render sanitized
-FreeBuff reasoning as a collapsible **Capyy Reasoning** tool step rather than
-pretending it is a file read or shell command. Copy
-`tool/mcp/capyy-reasoning.mcp.json`, replace the absolute script path, then add
-it to Claude/Codex as an MCP server. The gateway-side automatic handoff is
-intentionally gated until the client has declared this tool, so an uninstalled
-MCP can never interrupt a chat.
+### 3.2. Trong Docker Microservice (Node.js / Python / Go)
+Ví dụ gọi từ service `iot-apartment` hoặc `common-zalo-api`:
 
-**Source of each exchange (2 dimensions):** every record carries
-`meta.source` — the **client** you talk through — plus `meta.provider` — the
-**AI backend** that actually answers — plus `meta.via` (`gateway` when the
-request passed through the gateway). Shown as badges on the Dashboard:
+#### Python (sử dụng thư viện `openai` hoặc `httpx`):
+```python
+from openai import OpenAI
 
-| Scenario | source (client) | provider (backend) | via |
-|---|---|---|---|
-| Claude extension → Gateway → FreeBuff | `claude` (Anthropic route) | `FreeBuff` | `gateway` |
-| Cursor/Postman → Gateway → FreeBuff | `api` (OpenAI route) | `FreeBuff` | `gateway` |
-| Scanned Claude Code local history | `claude` | (from history) | — |
-| Scanned Codex CLI local history | `codex` | (from history) | — |
+client = OpenAI(
+    base_url="http://capyy:1221/v1",
+    api_key="local-key",
+)
 
-**View history on the Dashboard:** open `http://localhost:2222/` → *💬 Chat
-history* — project list with source badges; click a project to open the
-conversation in a **modal** (with thinking and tool calls), delete a project.
+response = client.chat.completions.create(
+    model="gemini-3.5-flash-lite",
+    messages=[{"role": "user", "content": "Tóm tắt tin nhắn này..."}],
+)
+print(response.choices[0].message.content)
+```
 
-**History API:**
+#### Node.js (OpenAI SDK):
+```javascript
+import OpenAI from "openai";
 
-- `GET /api/history` — project list + stats
-- `GET /api/history/{project}` — messages (query: `limit`, `offset`)
-- `DELETE /api/history/{project}` — delete a project
+const client = new OpenAI({
+  baseURL: "http://capyy:1221/v1",
+  apiKey: "local-key",
+});
 
-**Auto-scan local AI history (no copy-paste):**
+const completion = await client.chat.completions.create({
+  model: "gemini-3.5-flash-lite",
+  messages: [{ role: "user", content: "Xin chào!" }],
+});
+console.log(completion.choices[0].message.content);
+```
 
-`POST /api/history/scan` — or press *🔍 Scan from other AI* on the Dashboard:
+### 3.3. Coding Agents (Claude Code, Codex, Cline, Aider)
+- **Claude Code CLI:**
+  ```bash
+  export ANTHROPIC_BASE_URL="http://localhost:1221"
+  claude
+  ```
+- **OpenAI-compatible tools:**
+  ```bash
+  export OPENAI_BASE_URL="http://localhost:1221/v1"
+  export OPENAI_API_KEY="local-key"
+  ```
 
-- **Claude Code** (`~/.claude/projects/**/*.jsonl`) — keeps thinking,
-  tool_use, tool_result, timestamps; maps to the right project via `cwd`
-- **Codex CLI** (`~/.codex/sessions/**/*.jsonl`) — `session_meta` → project
-  via `cwd`
-- Idempotent: each session is tagged `meta.session_id`; re-scanning never
-  duplicates.
-- Only records within the 365-day window are imported.
-- In Docker both directories are auto-mounted (read-only), so scanning runs
-  inside the container with no extra setup.
+### 3.4. Dịch Ảnh Sản Phẩm Hàng Loạt (Python / Node.js)
 
-## Fallback
+#### Python:
+```python
+import httpx
 
-Each policy has Primary, Secondary, Third.
+# 1. Gửi file ảnh trực tiếp và nhận lại ảnh đã dịch
+with open("san_pham_1688.jpg", "rb") as f:
+    resp = httpx.post(
+        "http://capyy:1221/v1/images/translate",
+        headers={"Authorization": "Bearer local-key"},
+        files={"file": ("san_pham.jpg", f, "image/jpeg")},
+        data={"target_language": "Vietnamese", "response_format": "image"},
+        timeout=60.0
+    )
 
-## Config
+if resp.status_code == 200:
+    with open("san_pham_vietnam.jpg", "wb") as f:
+        f.write(resp.content)
+    print("Dịch ảnh thành công!")
+```
 
-Provider definitions are managed through the dashboard/API and persist to
-`config/providers.json` by default (`AI_GATEWAY_PROVIDERS_FILE` can override
-the path). `config/providers/freebuff.yaml` remains a seed/example file.
+#### Node.js / TypeScript:
+```typescript
+import fs from "fs";
+import FormData from "form-data";
+import axios from "axios";
 
-## Principles
+async function translateProductImage(imagePath: string, outputPath: string) {
+  const form = new FormData();
+  form.append("file", fs.createReadStream(imagePath));
+  form.append("target_language", "Vietnamese");
+  form.append("response_format", "image");
 
--   Never hardcode providers.
--   No HTTP or CLI dependency.
--   All routing goes through the Router.
--   A new provider only needs to implement the interface.
+  const response = await axios.post("http://capyy:1221/v1/images/translate", form, {
+    headers: {
+      ...form.getHeaders(),
+      Authorization: "Bearer local-key",
+    },
+    responseType: "arraybuffer",
+  });
 
-## Roadmap
+  fs.writeFileSync(outputPath, response.data);
+  console.log("Ảnh đã dịch lưu tại:", outputPath);
+}
+```
 
-Phase 1: Refactor + Registry + Router
+---
 
-Phase 2: Rule Engine + Health + Quota + Circuit Breaker
+## 🐳 4. Vận hành trong `common-docker.yml`
 
-Phase 3: AI Judge + Cost Optimizer + Learning Router
+Capyy được quản lý tập trung trong file `common-docker.yml`:
 
-Phase 4: Dashboard + Metrics + Multi-node
+```bash
+# Khởi động Capyy cùng cụm dịch vụ chung
+docker compose -f common-docker.yml up -d capyy
+
+# Xem logs thời gian thực
+docker compose -f common-docker.yml logs -f capyy
+
+# Khởi động lại khi đổi cấu hình
+docker compose -f common-docker.yml restart capyy
+```
+
+- **Database:** MariaDB schema `capyy` trên container `common-mariadb`.
+- **Dữ liệu cấu hình:** Lưu tại `./AI-Gateway-Provider/capyy/data/config`.
+- **Lịch sử chat & sessions:** Lưu tại `./AI-Gateway-Provider/capyy/data/app`.

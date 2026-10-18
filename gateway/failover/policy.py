@@ -11,12 +11,15 @@ from __future__ import annotations
 from typing import Any
 
 
-FREEBUFF_ACCOUNT_FAILURE_STATUSES = frozenset({401, 403, 429})
+FREEBUFF_ACCOUNT_FAILURE_STATUSES = frozenset({401, 403, 404, 408, 429})
 
 
 def is_freebuff_account_failure(error: Exception) -> bool:
     """Whether the current FreeBuff token must be retired for this request."""
-    return getattr(error, "status_code", None) in FREEBUFF_ACCOUNT_FAILURE_STATUSES
+    status_code = getattr(error, "status_code", None)
+    return status_code in FREEBUFF_ACCOUNT_FAILURE_STATUSES or (
+        isinstance(status_code, int) and status_code >= 500
+    )
 
 
 def should_fallback_to_next_provider(gateway: Any, error: Exception) -> bool:

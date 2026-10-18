@@ -2,10 +2,13 @@ import asyncio
 import json
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from gateway.services.chat_service import (
     _start_child_chat_run_chain,
     chat_events_with_recovery,
+    collect_completion,
+    prepare_freebuff_dispatch,
     start_freebuff_run_chain,
     stream_openai_chunks,
 )
@@ -52,6 +55,16 @@ class FailingStreamClient(FakeClient):
         yield
 
 
+class SlowCompletionClient(FakeClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.settings = SimpleNamespace(request_timeout=0.01, debug=False)
+
+    async def chat_events(self, payload):
+        await asyncio.sleep(1)
+        yield "data: [DONE]"
+
+
 class WaitingRoomClient(FakeClient):
     """Lần chat đầu trả 428 waiting_room_required, lần sau thành công."""
 
@@ -89,6 +102,49 @@ class AlwaysWaitingRoomClient(FakeClient):
         yield
 
 
+class PreparationClient:
+    def __init__(self, *, fail=False) -> None:
+        self.fail = fail
+
+    async def request_ad_chain(self, messages=None):
+        if self.fail:
+            raise CodebuffError("upstream unavailable", 502)
+
+    async def validate_agents(self):
+        return None
+
+
+class PreparationLease:
+    def __init__(self, index, client) -> None:
+        self._account_index = index
+        self.client = client
+        self.session = object()
+        self.marked_error = None
+        self.closed = False
+
+    def mark_rate_limited(self, duration, *, error=None):
+        self.marked_error = error
+
+    async def aclose(self):
+        self.closed = True
+
+
+class PreparationAccounts:
+    account_count = 2
+
+    def __init__(self):
+        self.leases = [
+            PreparationLease(0, PreparationClient(fail=True)),
+            PreparationLease(1, PreparationClient()),
+        ]
+        self.acquired = 0
+
+    async def acquire_session(self, model, messages=None):
+        lease = self.leases[self.acquired]
+        self.acquired += 1
+        return lease
+
+
 class RateLimitedStreamClient(FakeClient):
     async def chat_events(self, payload):
         raise CodebuffError("Codebuff chat failed: 429 quota", 429)
@@ -96,6 +152,32 @@ class RateLimitedStreamClient(FakeClient):
 
 
 class StreamingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dispatch_preparation_fails_over_to_another_token(self) -> None:
+        accounts = PreparationAccounts()
+        model = SimpleNamespace(session_id="model", upstream_id="upstream")
+        settings = SimpleNamespace(client_id="client", max_tokens=100, account_cooldown=60)
+
+        async def _start_run(_client, _model):
+            return FreebuffRun("run", "agent", "started")
+
+        with patch("gateway.services.chat_service.start_freebuff_run_chain", _start_run), patch(
+            "gateway.services.chat_service.build_payload",
+            return_value={"payload": True},
+        ):
+            lease, client, run, payload = await prepare_freebuff_dispatch(
+                accounts,
+                model,
+                {"model": "m"},
+                [],
+                settings,
+            )
+
+        self.assertEqual(lease._account_index, 1)
+        self.assertIs(client, lease.client)
+        self.assertEqual(run.run_id, "run")
+        self.assertEqual(payload, {"payload": True})
+        self.assertTrue(accounts.leases[0].closed)
+        self.assertEqual(accounts.leases[0].marked_error.status_code, 502)
     async def test_stream_forwards_content_before_finalize(self) -> None:
         client = FakeClient()
         settings = Settings(codebuff_token="token", local_api_key=None, debug=False)
@@ -342,6 +424,42 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(retried["called"], 1)
         self.assertEqual(retried["payload"]["codebuff_metadata"]["freebuff_instance_id"], "token-2")
         self.assertEqual(lines[-1], "data: [DONE]")
+
+    async def test_chat_events_fails_over_on_upstream_server_error(self) -> None:
+        unavailable = FailingStreamClient()
+        healthy = FakeClient()
+        attempts = {"count": 0}
+
+        async def _failover(error: CodebuffError, _payload: dict) -> tuple[FakeClient, dict]:
+            self.assertEqual(error.status_code, 502)
+            attempts["count"] += 1
+            return healthy, {}
+
+        lines = [
+            line
+            async for line in chat_events_with_recovery(
+                unavailable,
+                {},
+                failover=_failover,
+            )
+        ]
+
+        self.assertEqual(attempts["count"], 1)
+        self.assertEqual(lines[-1], "data: [DONE]")
+
+    async def test_non_stream_completion_times_out_and_returns_gateway_error(self) -> None:
+        client = SlowCompletionClient()
+        run = FreebuffRun(
+            run_id="run-timeout",
+            agent_id="base2-free-deepseek-flash",
+            started_at="2026-05-23T00:00:00.000Z",
+        )
+        with patch("gateway.services.chat_service.schedule_finalize_run"):
+            with self.assertRaises(CodebuffError) as context:
+                await collect_completion(client, {}, run, "deepseek/deepseek-v4-flash")
+
+        self.assertEqual(context.exception.status_code, 504)
+        self.assertIn("timed out", str(context.exception))
 
 
 if __name__ == "__main__":
