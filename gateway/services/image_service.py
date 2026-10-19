@@ -489,8 +489,10 @@ class ImageTranslationService:
         clean_char_mask = np.zeros((roi_h, roi_w), dtype=np.uint8)
         for i in range(1, num_labels):
             cx, cy, cw_c, ch_c, area = stats[i]
-            touches_edge = (cx <= 1 or cy <= 1 or (cx + cw_c) >= roi_w - 1 or (cy + ch_c) >= roi_h - 1)
-            if touches_edge or area >= (roi_h * roi_w * 0.45):
+            # Exclude enclosing container border frames and edge-margin strokes
+            is_frame = (cw_c >= 0.60 * roi_w and ch_c >= 0.60 * roi_h) or (cw_c >= 0.82 * roi_w) or (ch_c >= 0.82 * roi_h)
+            touches_edge = (cx <= 5 or cy <= 5 or (cx + cw_c) >= roi_w - 5 or (cy + ch_c) >= roi_h - 5)
+            if is_frame or touches_edge or area >= (roi_h * roi_w * 0.40):
                 continue
             if area >= 6:
                 clean_char_mask[labels == i] = 255
@@ -506,12 +508,25 @@ class ImageTranslationService:
             kernel_sz = 3 if max(roi_h, roi_w) <= 90 else 4
             return cv2.dilate(clean_char_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_sz, kernel_sz)))
         else:
-            # Fallback threshold
+            # Fallback threshold - strictly protect enclosing container frames and boundary margins
             if text_lum > bg_lum:
                 mask = (gray > 175).astype(np.uint8) * 255
             else:
-                mask = (gray < 165).astype(np.uint8) * 255
-            return cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
+                mask = (gray < min(165, int(bg_lum - 15))).astype(np.uint8) * 255
+
+            fb_num, fb_labels, fb_stats, _ = cv2.connectedComponentsWithStats(mask)
+            fb_mask = np.zeros((roi_h, roi_w), dtype=np.uint8)
+            for i in range(1, fb_num):
+                fcx, fcy, fcw, fch, farea = fb_stats[i]
+                is_frame = (fcw >= 0.60 * roi_w and fch >= 0.60 * roi_h) or (fcw >= 0.82 * roi_w) or (fch >= 0.82 * roi_h)
+                touches_edge = (fcx <= 5 or fcy <= 5 or (fcx + fcw) >= roi_w - 5 or (fcy + fch) >= roi_h - 5)
+                if is_frame or touches_edge or farea >= (roi_h * roi_w * 0.40):
+                    continue
+                if farea >= 6:
+                    fb_mask[fb_labels == i] = 255
+            if np.sum(fb_mask > 0) > 0:
+                return cv2.dilate(fb_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
+            return np.zeros((roi_h, roi_w), dtype=np.uint8)
 
     @staticmethod
     def _inpaint_strategy_perspective_surface(
@@ -636,11 +651,19 @@ class ImageTranslationService:
                 region_char_components: list[dict[str, Any]] = []
 
                 gid_str = str(r.get("group_id", "")).lower()
-                is_pill_badge = any(k in gid_str for k in ["badge", "feature", "pill"])
-                is_bubble_group = any(k in gid_str for k in ["bubble", "callout", "doodle", "tag", "chip", "sticker", "stamp"])
+                container_shape = str(r.get("container_shape") or "").strip().lower()
+                has_container_shape = container_shape in ("pill", "circle", "bubble", "cloud", "ribbon", "rectangle", "chip", "tag", "badge")
+                is_pill_badge = any(k in gid_str for k in ["badge", "feature", "pill"]) or container_shape == "pill"
+                is_bubble_group = any(k in gid_str for k in ["bubble", "callout", "doodle", "tag", "chip", "sticker", "stamp", "cloud"]) or container_shape in ("bubble", "circle", "cloud")
                 is_packaging = any(k in gid_str for k in ["packaging", "carton", "prop", "bottle"])
-                is_banner = any(k in gid_str for k in ["banner", "ribbon", "footer", "bar", "strip"])
-                is_container_elem = is_pill_badge or is_bubble_group or is_banner or any(k in gid_str for k in ["label", "button"])
+                is_banner = any(k in gid_str for k in ["banner", "ribbon", "footer", "bar", "strip"]) or container_shape in ("ribbon", "strip")
+                is_container_elem = (
+                    is_pill_badge
+                    or is_bubble_group
+                    or is_banner
+                    or has_container_shape
+                    or any(k in gid_str for k in ["label", "button"])
+                )
 
                 bg_bgr = np.array([bg_rgb[2], bg_rgb[1], bg_rgb[0]], dtype=np.float32)
                 text_bgr = np.array([text_rgb[2], text_rgb[1], text_rgb[0]], dtype=np.float32)
@@ -821,9 +844,9 @@ class ImageTranslationService:
                     policy = "single_line_contain" if box_h < 45 else "hero_impact_wrap"
 
             # Proportional safe padding inside container based on shape & icon
-            if container_shape in ("bubble", "circle") or is_bubble:
-                pad_x = max(6, int(box_w * 0.08))
-                pad_y = max(4, int(box_h * 0.10))
+            if container_shape in ("bubble", "circle", "cloud") or is_bubble:
+                pad_x = max(14, int(box_w * 0.16))
+                pad_y = max(8, int(box_h * 0.14))
             elif container_shape in ("ribbon", "strip") or is_horizontal_banner:
                 pad_x = max(10, int(box_w * 0.03))
                 pad_y = max(4, int(box_h * 0.12))
@@ -926,7 +949,7 @@ class ImageTranslationService:
                         max_single_sz = max(13, min(int(min(avail_w, avail_h) * 0.22), 20))
                 elif container_shape in ("ribbon", "strip") or is_horizontal_banner:
                     max_single_sz = min(28, max(13, int(avail_h * 0.65)))
-                elif container_shape in ("bubble", "circle") or is_bubble:
+                elif container_shape in ("bubble", "circle", "cloud") or is_bubble:
                     max_single_sz = min(28, max(14, int(avail_h * 0.65)))
                 elif container_shape == "pill" or is_pill_badge:
                     max_single_sz = min(36, max(16, int(avail_h * 0.75)))

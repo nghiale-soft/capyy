@@ -76,6 +76,45 @@ class TestImageTranslationStrategy(unittest.TestCase):
         out = service._render_translations(canvas, regions)
         self.assertIsInstance(out, Image.Image)
 
+    def test_container_border_preserved_during_inpainting(self):
+        """Verify that enclosing container border strokes are never erased during inpainting."""
+        import cv2
+        service = ImageTranslationService(None)
+        
+        # Create a 200x200 canvas with a dark green border loop around a white/cream cloud
+        cv_img = np.full((200, 200, 3), 255, dtype=np.uint8)
+        # Draw outer container border loop (dark green)
+        cv2.rectangle(cv_img, (20, 20), (180, 180), (27, 77, 62), 3)
+        # Draw some dark text inside the container
+        cv2.putText(cv_img, "TEXT", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (27, 77, 62), 2)
+        
+        canvas = Image.fromarray(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB))
+        
+        regions = [{
+            "erase_box_2d": [100, 100, 900, 900],  # Box covering the container
+            "box_2d": [100, 100, 900, 900],
+            "original_text": "TEXT",
+            "translated_text": "CHỮ",
+            "inpaint_strategy": "preserve_container_stroke_only",
+            "layout_policy": "hero_impact_wrap",
+            "container_shape": "bubble",
+            "bg_color_hex": "#ffffff",
+            "text_color_hex": "#1b4d3e",
+            "group_id": "bubble_labels",
+            "bold": True,
+        }]
+        
+        inpainted = service._inpaint_canvas(canvas, regions)
+        arr = np.array(inpainted)
+        
+        # Border stroke at (20, 100) must remain dark (not erased to 255)
+        border_pixel_r = int(arr[100, 20, 0])
+        border_pixel_g = int(arr[100, 20, 1])
+        border_pixel_b = int(arr[100, 20, 2])
+        self.assertLess(border_pixel_r, 100, f"Expected dark border R < 100, got {border_pixel_r}")
+        self.assertLess(border_pixel_b, 50, f"Expected dark border B < 50, got {border_pixel_b}")
+
 
 if __name__ == "__main__":
     unittest.main()
+
