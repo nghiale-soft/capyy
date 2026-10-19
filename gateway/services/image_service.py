@@ -210,7 +210,7 @@ class ImageTranslationService:
             f"   - 'font_family': 'serif' if text has flared serif or decorative strokes (like luxury/cosmetic display text), else 'sans'.\n"
             f"4. TYPOGRAPHY SCALE & CONCISENESS RULES (MAXIMIZE VISUAL IMPACT):\n"
             f"   - Prominent Marketing Titles ('hero_impact_wrap'): Always make translations bold, concise, and punchy. If the title is 3-4 words (e.g. 'MÁY TẬP BỤNG'), you may use '\\n' (e.g. 'MÁY TẬP\\nBỤNG' or 'SĂN CHẮC\\nCƠ BỤNG') so each line can render at huge font size filling the vertical space.\n"
-            f"   - Badges, Chips, and Bubble Tags: Match the 2 to 4 Chinese characters with concise 2 to 3 Vietnamese words (e.g. 'TẬP CƠ BỤNG', 'SIẾT CƠ LÕI', 'TIỆN TẠI NHÀ', 'SIÊU ÊM ÁI'). DO NOT output lengthy sentences that compress the font size down.\n"
+            f"   - Badges, Chips, and Bubble Tags: Match the 2 to 4 Chinese characters with concise 2 to 3 Vietnamese words (e.g. 'TẬP CƠ BỤNG', 'SIẾT CƠ LÕI', 'TIỆN TẠI NHÀ', 'SIÊU ÊM ÁI'). For spec and capacity tags (e.g. '蒸1-12个蛋', '蒸1-6个蛋'), translate concisely: 'Hấp 1-12 trứng' or 'Hấp 1-6 trứng' instead of lengthy sentences (e.g. 'HẤP 1-12 QUẢ TRỨNG') that compress the font size down.\n"
             f"5. PACKAGING & PROPS HANDLING:\n"
             f"   - DO NOT translate background props or decorative packaging (such as milk cartons, bottles, prop cans) UNLESS the user explicitly instructed to translate packaging.\n"
             f"   - If instructed to translate packaging: ONLY translate substantive foreign brand names or descriptive foreign words (e.g. '臻浓牛奶' -> 'Sữa tiệt trùng' or 'Sữa tươi'). DO NOT translate or re-render numbers, percentages, volume units, or universal Latin acronyms (e.g. '39%', '250ml', 'UHT', barcodes).\n"
@@ -489,10 +489,9 @@ class ImageTranslationService:
         clean_char_mask = np.zeros((roi_h, roi_w), dtype=np.uint8)
         for i in range(1, num_labels):
             cx, cy, cw_c, ch_c, area = stats[i]
-            # Exclude enclosing container border frames and edge-margin strokes
-            is_frame = (cw_c >= 0.60 * roi_w and ch_c >= 0.60 * roi_h) or (cw_c >= 0.82 * roi_w) or (ch_c >= 0.82 * roi_h)
-            touches_edge = (cx <= 5 or cy <= 5 or (cx + cw_c) >= roi_w - 5 or (cy + ch_c) >= roi_h - 5)
-            if is_frame or touches_edge or area >= (roi_h * roi_w * 0.40):
+            # Exclude enclosing container border frames and edge-spanning boundary strokes
+            is_frame = (cw_c >= 0.58 * roi_w and ch_c >= 0.58 * roi_h) or (cw_c >= 0.88 * roi_w) or (ch_c >= 0.88 * roi_h)
+            if is_frame or area >= (roi_h * roi_w * 0.40):
                 continue
             if area >= 6:
                 clean_char_mask[labels == i] = 255
@@ -518,9 +517,8 @@ class ImageTranslationService:
             fb_mask = np.zeros((roi_h, roi_w), dtype=np.uint8)
             for i in range(1, fb_num):
                 fcx, fcy, fcw, fch, farea = fb_stats[i]
-                is_frame = (fcw >= 0.60 * roi_w and fch >= 0.60 * roi_h) or (fcw >= 0.82 * roi_w) or (fch >= 0.82 * roi_h)
-                touches_edge = (fcx <= 5 or fcy <= 5 or (fcx + fcw) >= roi_w - 5 or (fcy + fch) >= roi_h - 5)
-                if is_frame or touches_edge or farea >= (roi_h * roi_w * 0.40):
+                is_frame = (fcw >= 0.58 * roi_w and fch >= 0.58 * roi_h) or (fcw >= 0.88 * roi_w) or (fch >= 0.88 * roi_h)
+                if is_frame or farea >= (roi_h * roi_w * 0.40):
                     continue
                 if farea >= 6:
                     fb_mask[fb_labels == i] = 255
@@ -794,11 +792,13 @@ class ImageTranslationService:
             ymin, xmin, ymax, xmax = box
 
             gid_lower = str(r.get("group_id", "")).lower()
-            is_bubble = any(k in gid_lower for k in ["bubble", "callout", "doodle", "tag", "chip", "sticker", "stamp"])
-            is_pill_badge = any(k in gid_lower for k in ["badge", "feature", "pill"])
+            container_shape = str(r.get("container_shape") or "").strip().lower()
+            is_bubble = any(k in gid_lower for k in ["bubble", "callout", "doodle", "tag", "chip", "sticker", "stamp", "cloud"]) or container_shape in ("bubble", "circle", "cloud")
+            is_pill_badge = any(k in gid_lower for k in ["badge", "feature", "pill"]) or container_shape == "pill"
             is_packaging = any(k in gid_lower for k in ["packaging", "carton", "prop", "bottle"])
-            is_horizontal_banner = any(k in gid_lower for k in ["banner", "ribbon", "footer", "bar", "strip"]) or ((xmax - xmin) / max(1, ymax - ymin) >= 4.0 and ymin > 600)
-            is_badge = is_pill_badge or is_bubble or any(k in gid_lower for k in ["label", "button"])
+            is_horizontal_banner = any(k in gid_lower for k in ["banner", "ribbon", "footer", "bar", "strip"]) or container_shape in ("ribbon", "strip") or ((xmax - xmin) / max(1, ymax - ymin) >= 4.0 and ymin > 600)
+            is_container_elem = is_pill_badge or is_bubble or is_horizontal_banner or container_shape in ("pill", "circle", "bubble", "cloud", "rectangle", "ribbon", "chip", "tag", "badge")
+            is_badge = is_container_elem or any(k in gid_lower for k in ["label", "button"])
 
             x1 = max(0, min(w, int(xmin * w / 1000)))
             y1 = max(0, min(h, int(ymin * h / 1000)))
@@ -844,9 +844,14 @@ class ImageTranslationService:
                     policy = "single_line_contain" if box_h < 45 else "hero_impact_wrap"
 
             # Proportional safe padding inside container based on shape & icon
+            is_full_container = box_h >= 90 or "\n" in str(r.get("translated_text", ""))
             if container_shape in ("bubble", "circle", "cloud") or is_bubble:
-                pad_x = max(14, int(box_w * 0.16))
-                pad_y = max(8, int(box_h * 0.14))
+                if is_full_container:
+                    pad_x = max(14, int(box_w * 0.16))
+                    pad_y = max(8, int(box_h * 0.14))
+                else:
+                    pad_x = max(6, int(box_w * 0.06))
+                    pad_y = max(4, int(box_h * 0.08))
             elif container_shape in ("ribbon", "strip") or is_horizontal_banner:
                 pad_x = max(10, int(box_w * 0.03))
                 pad_y = max(4, int(box_h * 0.12))
@@ -869,8 +874,10 @@ class ImageTranslationService:
 
             # Headline & Header Expansion:
             # If item is in the top header/title area on the left margin, allow avail_w to expand into available safe whitespace
+            # CRITICAL GUARD: Only expand for free-floating text, NEVER expand containers/badges/bubbles beyond their visual bounds!
             is_header_elem = any(k in str(r.get("group_id", "")).lower() for k in ["header", "title", "hero", "main"]) or (ymin < 300 and box_h >= 60 and xmin < 300)
-            if is_header_elem and x1 < int(w * 0.35):
+            is_free_floating_title = is_header_elem and not is_container_elem and not is_badge
+            if is_free_floating_title and x1 < int(w * 0.35):
                 safe_max_x = int(w * 0.60)
                 if safe_max_x > x1:
                     avail_w = max(avail_w, safe_max_x - x1)
