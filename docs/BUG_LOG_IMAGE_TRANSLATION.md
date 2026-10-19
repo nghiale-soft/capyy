@@ -1,0 +1,1 @@
+bugs/image_translation/BUG_LOG_IMAGE_TRANSLATION_1688.md
