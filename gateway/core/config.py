@@ -55,6 +55,11 @@ class Settings:
     account_cooldown: float = 60.0
     # File storing account tokens configured through the dashboard (gitignored).
     tokens_file: str = "config/freebuff-tokens.json"
+    # Image translation sessions: original + rendered versions + editable regions.
+    # File-backed in v1; the store interface is swappable for object storage.
+    image_store_dir: str = "data/image_sessions"
+    image_store_ttl_hours: int = 168
+    image_store_max_bytes: int = 25 * 1024 * 1024
     # Per-project/per-session chat history (JSONL). "always" injects history context into
     # every request; "memory_only" injects only when the user asks about the
     # past (do you remember / last time / previously...); "off" disables it.
@@ -171,6 +176,9 @@ def load_settings() -> Settings:
         retry_max_delay=float(os.getenv("FREEBUFF_RETRY_MAX_DELAY", "10.0")),
         account_cooldown=float(os.getenv("FREEBUFF_ACCOUNT_COOLDOWN", "60.0")),
         tokens_file="config/freebuff-tokens.json",
+        image_store_dir=os.getenv("CAPYY_IMAGE_STORE_DIR", "data/image_sessions"),
+        image_store_ttl_hours=_int("CAPYY_IMAGE_STORE_TTL_HOURS", 168),
+        image_store_max_bytes=_int("CAPYY_IMAGE_STORE_MAX_BYTES", 25 * 1024 * 1024),
         history_dir=os.getenv("FREEBUFF_HISTORY_DIR", "data/chat_history"),
         history_max_age_days=_int("FREEBUFF_HISTORY_MAX_AGE_DAYS", 365),
         history_inject_mode=os.getenv("FREEBUFF_HISTORY_INJECT_MODE", "memory_only"),

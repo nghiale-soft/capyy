@@ -69,13 +69,35 @@ class OpenAICompatibleProvider(Provider):
             return self.base_url.rsplit("/chat/completions", 1)[0] + "/models"
         return f"{self.base_url}/models"
 
-    async def chat(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Gọi chat completions non-stream."""
-        url = self._chat_url()
+    _GEMINI_HOST = "generativelanguage.googleapis.com"
+
+    def _is_gemini_endpoint(self) -> bool:
+        return (
+            self.id.strip().lower() == "gemini"
+            or self._GEMINI_HOST in self.base_url.lower()
+        )
+
+    def _prepare_body(self, payload: dict[str, Any], *, stream: bool) -> dict[str, Any]:
+        """Copy the client payload and apply upstream compatibility fixes."""
         body = dict(payload)
         if (not body.get("model") or body.get("model") in ("default", "gemini")) and self._models:
             body["model"] = self._models[0]
-        body["stream"] = False
+        body["stream"] = stream
+        # Google's OpenAI-compatible endpoint accepts minimal/low/medium/high
+        # but rejects reasoning_effort="none" with 400 INVALID_ARGUMENT. Hermes
+        # disables reasoning for auxiliary calls (title generation) with
+        # "none"; use the lowest supported level instead of failing the call.
+        if (
+            str(body.get("reasoning_effort") or "").strip().lower() == "none"
+            and self._is_gemini_endpoint()
+        ):
+            body["reasoning_effort"] = "minimal"
+        return body
+
+    async def chat(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Gọi chat completions non-stream."""
+        url = self._chat_url()
+        body = self._prepare_body(payload, stream=False)
         try:
             response = await self._client.post(
                 url,
@@ -97,10 +119,7 @@ class OpenAICompatibleProvider(Provider):
     async def stream_chat(self, payload: dict[str, Any]) -> AsyncIterator[str]:
         """Gọi chat completions stream, trả về từng dòng SSE."""
         url = self._chat_url()
-        body = dict(payload)
-        if (not body.get("model") or body.get("model") in ("default", "gemini")) and self._models:
-            body["model"] = self._models[0]
-        body["stream"] = True
+        body = self._prepare_body(payload, stream=True)
         try:
             async with self._client.stream(
                 "POST",

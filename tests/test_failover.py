@@ -118,6 +118,17 @@ class GatewayFailoverTests(unittest.TestCase):
         joined = b"".join(chunks).decode()
         self.assertIn("[DONE]", joined)
 
+    def test_stream_does_not_double_prefix_upstream_sse(self):
+        """Upstream ``data:`` lines must be forwarded as one SSE data frame, not
+        wrapped into ``data: data: ...`` (Hermes and other strict clients reject
+        the latter)."""
+        gw = self._make_gateway([("a", _Provider("a"))])
+        chunks = _collect(gw.stream_chat("a", {"model": "x", "messages": []}))
+        joined = b"".join(chunks).decode()
+        self.assertNotIn("data: data:", joined)
+        frames = [line for line in joined.splitlines() if line.startswith("data: ")]
+        self.assertEqual(frames, ['data: {"x": 1}', "data: [DONE]"])
+
     def test_freebuff_providers_are_not_used_as_failover_targets(self):
         # Freebuff has its own session logic; it must not receive generic payloads.
         gw = self._make_gateway(

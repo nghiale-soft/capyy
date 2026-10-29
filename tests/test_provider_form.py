@@ -206,6 +206,47 @@ class OpenAICompatibleProviderModelsTests(unittest.TestCase):
             asyncio.run(provider.aclose())
 
 
+class OpenAICompatibleProviderPayloadTests(unittest.TestCase):
+    def _provider(self, provider_id: str, base_url: str):
+        from providers.openai_compatible import OpenAICompatibleProvider
+
+        return OpenAICompatibleProvider(provider_id, base_url=base_url)
+
+    def test_gemini_none_reasoning_effort_is_mapped_to_minimal(self) -> None:
+        provider = self._provider(
+            "gemini", "https://generativelanguage.googleapis.com/v1beta/openai"
+        )
+        try:
+            body = provider._prepare_body(
+                {
+                    "model": "gemini-3.5-flash-lite",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "reasoning_effort": "none",
+                },
+                stream=False,
+            )
+        finally:
+            _run(provider.aclose())
+        self.assertEqual(body["reasoning_effort"], "minimal")
+        self.assertFalse(body["stream"])
+
+    def test_non_gemini_none_reasoning_effort_is_preserved(self) -> None:
+        provider = self._provider("other", "https://api.example.com/v1")
+        try:
+            body = provider._prepare_body(
+                {
+                    "model": "some-model",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "reasoning_effort": "none",
+                },
+                stream=True,
+            )
+        finally:
+            _run(provider.aclose())
+        self.assertEqual(body["reasoning_effort"], "none")
+        self.assertTrue(body["stream"])
+
+
 class RegistryCommandSkipTests(unittest.TestCase):
     def test_command_providers_other_than_freebuff_are_skipped(self) -> None:
         from registry import ProviderRegistry

@@ -13,7 +13,7 @@ Tài liệu này tổng hợp và phân tích toàn diện 2 khía cạnh cốt 
 | Khía cạnh | Mô hình Gen ảnh Diffusion (DALL-E, SDXL, Flux) | Giải pháp Hybrid của Capyy (Vision AI + CV Thuần) |
 | :--- | :--- | :--- |
 | **Bản chất bài toán** | **Generative Sampling**: Dự đoán ma trận xác suất hàng triệu điểm ảnh qua hàng chục bước khử nhiễu (Denoising steps). | **Perception + Mathematical Rendering**: AI chỉ đọc hiểu ngữ nghĩa & tọa độ; CPU máy chủ tính toán hình học và vẽ chữ. |
-| **Loại Token tiêu thụ** | Token ảnh đầu vào + Chi phí Inference GPU khổng lồ cho mỗi lượt render ảnh. | **Chỉ tốn Text Tokens**: ~700–900 prompt tokens + ~200–400 output tokens dạng JSON. |
+| **Loại Token tiêu thụ** | Token ảnh đầu vào + Chi phí Inference GPU khổng lồ cho mỗi lượt render ảnh. | **Chỉ tốn Text Tokens**: ~700–1.200 prompt tokens + ~400–1.800 output tokens dạng JSON (đủ trích xuất tọa độ chi tiết cho 60+ ký tự riêng lẻ). |
 | **Yêu cầu phần cứng** | GPU chuyên dụng có VRAM tối thiểu 16GB–24GB (A10G, A100, RTX 4090) hoặc thuê API đắt đỏ. | Chạy mượt trên **CPU tiêu chuẩn** của máy chủ hoặc Mac mini. Container Docker chiếm **< 300MB RAM**. |
 
 ---
@@ -115,25 +115,32 @@ flowchart TD
    - Để triệt tiêu hiện tượng "vết mờ sáp/nhựa" (plastic/waxy blur) đặc trưng của các thuật toán inpaint, hệ thống tự đo độ lệch chuẩn của nhiễu ảnh gốc trên vùng không bị che:
      $$\sigma_{\text{noise}} = \operatorname{std}\left(I_{\text{orig}} - \operatorname{GaussianBlur}(I_{\text{orig}}, (5,5), 0)\right)$$
    - Tạo mảng nhiễu chuẩn $\mathcal{N}(0, \sigma^2)$ và phủ vào vùng inpaint với trọng số làm mờ viền Gaussian. Kết quả là nền gỗ, tường sơn, vải giữ nguyên được hạt nhiễu tự nhiên của camera chụp.
+6. **Xóa Nền Cục Bộ Theo Từng Ký Tự (`char_boxes_2d` Isolation):**
+   - Thay vì gom cả dòng chữ dài vào một bounding box tổng (dễ bị AI ước lượng thiếu biên phải và bỏ sót chữ đuôi), hệ thống ép buộc trích xuất danh sách `char_boxes_2d` cho từng ký tự Hán ngữ riêng biệt (chữ nào khung nấy).
+   - Inpainting thực hiện cục bộ trên từng box ký tự nhỏ, triệt tiêu 100% bóng nét chữ Hán sót lại và bảo vệ tuyệt đối các đường nét sản phẩm lân cận.
 
 ---
 
 ### Nhóm 2: Đo độ nghiêng vật lý & Chiều cao ký tự gốc (Slant Angle & Glyph Sizing)
 
-6. **Khớp đường thẳng định hướng bằng chuẩn L2 (`cv2.fitLine` / PCA):**
-   - Trích xuất tập hợp tọa độ trọng tâm $(cx_i, cy_i)$ của các nét chữ chính ($\text{area} \ge 0.35 \times \text{max\_area}$).
+7. **Xác thực góc nghiêng hình học tuyệt đối (Geometric Baseline Slant Verification):**
+   - Khi có danh sách tọa độ `char_boxes_2d`, hệ thống tính toán trực tiếp độ dốc đường cơ sở (baseline) nối giữa tâm ký tự đầu $(cx_1, cy_1)$ và tâm ký tự cuối $(cx_n, cy_n)$:
+     $$\theta_{\text{geo}} = \operatorname{degrees}(\arctan2(-(cy_n - cy_1), cx_n - cx_1))$$
+   - **Quy tắc ngang tuyệt đối**: Nếu $|\theta_{\text{geo}}| < 3.5^\circ$, hệ thống xác nhận dòng chữ nằm ngang $0^\circ$ và ghi đè `rotation_deg = 0`, ngăn chặn hoàn toàn việc AI bị "đánh lừa" bởi các đường kẻ chỉ dẫn (leader lines) hay góc nghiêng 3D của sản phẩm.
+8. **Khớp đường thẳng định hướng bằng chuẩn L2 (`cv2.fitLine` / PCA):**
+   - Với các trường hợp không có `char_boxes_2d` và số lượng nét chữ $\ge 4$, trích xuất tập hợp tọa độ trọng tâm $(cx_i, cy_i)$ của các nét chữ chính ($\text{area} \ge 0.35 \times \text{max\_area}$).
    - Tìm vector chỉ phương đơn vị $(vx, vy)$ tối thiểu hóa hàm mục tiêu khoảng cách L2:
      $$\min_{(vx, vy)} \sum_{i} d_i^2$$
    - Tính góc nghiêng vật lý thực tế:
      $$\theta = -\operatorname{degrees}(\arctan2(vy, vx))$$
    - Nếu $|\theta| < 4.5^\circ$: Quy về $0^\circ$ (chữ nằm ngang chuẩn).
    - Nếu $|\theta| \ge 4.5^\circ$: Lấy độ nghiêng thật (ví dụ: $16^\circ$ cho bong bóng thoại, $49^\circ$ cho dải bao bì).
-7. **Đồng bộ góc nghiêng trung vị theo nhóm (Median Slant Harmonization):**
-   - Trong cùng một phối cảnh thiết kế (ví dụ 4 bong bóng thoại trong 1 hình), thuật toán lấy góc trung vị:
+9. **Đồng bộ góc nghiêng trung vị theo nhóm (Median Slant Harmonization):**
+   - Trong cùng một phối cảnh thiết kế (ví dụ các nhãn cùng `group_id`), thuật toán kiểm tra tỷ lệ phần tử nằm ngang ($|\theta_i| < 5^\circ$): nếu chiếm đa số ($\ge 50\%$), tất cả được đưa về $0^\circ$; ngược lại, lấy góc trung vị:
      $$\theta_{\text{group}} = \operatorname{round}\left(\operatorname{median}\left(\{\theta_i \mid |\theta_i| \ge 5^\circ\}\right)\right)$$
    - Đảm bảo toàn bộ hệ thống nhãn có độ dốc đồng nhất 100%, không xảy ra tình trạng nhãn dốc nhãn nằm ngang do nhiễu phối cảnh cục bộ.
-8. **Đo đạc chiều cao ký tự gốc (`orig_glyph_h`):**
-   - Lấy trung vị chiều cao $\operatorname{median}(h_i)$ của các bounding box ký tự Trung Quốc để làm chuẩn tham chiếu co giãn cho chữ dịch La-tinh.
+10. **Đo đạc chiều cao ký tự gốc (`orig_glyph_h`):**
+    - Lấy trung vị chiều cao $\operatorname{median}(h_i)$ của các bounding box ký tự Trung Quốc để làm chuẩn tham chiếu co giãn cho chữ dịch La-tinh.
 
 ---
 
@@ -163,6 +170,23 @@ flowchart TD
 15. **Phép quay Affine nội suy Bicubic (`Image.rotate`):**
     - Xoay layer văn bản trong suốt theo góc $\theta$ với chế độ nới rộng khung hình (`expand=True`) để không cắt cụt đuôi chữ.
     - Căn chỉnh tâm ma trận xoay trùng với tâm hình học của vùng chứa $(center_x, center_y)$ trước khi paste đè với mặt nạ alpha blending.
+
+---
+
+## PHẦN 3: QA TẤT ĐỊNH & REPAIR DO NGƯỜI DÙNG
+
+Pipeline không chạy một vòng LLM QA tự động cho mọi ảnh. Thay vào đó:
+
+1. **QA tất định miễn phí (luôn bật):** sau khi render, gateway so sánh ảnh gốc và ảnh kết quả trong từng vùng chữ để phát hiện nét chữ nguồn còn sót lại không đổi (ví dụ ký tự `蛋` bị dính viền container). Bước này chỉ dùng CPU/OpenCV, không tốn token, và trả về `qc_report.issues` theo `region_id`.
+2. **Repair do người dùng chủ động:** mỗi ảnh dịch có `id` và mỗi vùng có `region_id` ổn định. Khi người dùng thấy lỗi, họ gọi `POST /v1/images/{id}/repair` với mô tả vùng lỗi. Gateway gọi lại model đúng một lần cho yêu cầu đó, merge thay đổi vào đúng region, rồi **render lại từ ảnh gốc** để tránh chồng chữ lên bản dịch cũ.
+
+Hệ quả kinh tế:
+
+- Ảnh đạt yêu cầu không phát sinh thêm lượt gọi model nào.
+- Chi phí QA tự động gần như bằng 0.
+- Chi phí repair chỉ phát sinh khi người dùng thực sự yêu cầu, thay vì trả tiền cho một vòng QA LLM mơ hồ trên mọi ảnh.
+
+Giới hạn v1: QA tất định tập trung vào lỗi "chữ nguồn còn sót"; các lỗi như hỏng viền container hoặc chữ tràn khung chưa được phát hiện tự động. `base="current"` chưa hỗ trợ; repair luôn dùng ảnh gốc làm nền pixel.
 
 ---
 

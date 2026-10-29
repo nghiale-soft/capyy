@@ -96,11 +96,15 @@ Response JSON:
 ```json
 {
   "data": {
+    "id": "img_0123456789abcdef0123456789abcdef",
+    "version": 1,
+    "expires_at": 1790000000.0,
     "image_base64": "data:image/jpeg;base64,...",
     "format": "jpeg",
     "regions_count": 8,
     "regions": [
       {
+        "region_id": 0,
         "box_2d": [75, 43, 140, 295],
         "original_text": "咖啡色",
         "translated_text": "Màu cà phê",
@@ -112,10 +116,41 @@ Response JSON:
         "rotation_deg": 0,
         "bold": true
       }
-    ]
+    ],
+    "qc_report": {
+      "approved": true,
+      "qc_score": 100,
+      "deterministic": true,
+      "issues": []
+    }
   }
 }
 ```
+
+Khi trả về file JPEG trực tiếp, `id`/`version` nằm trong các header
+`X-Capyy-Image-Id`, `X-Capyy-Image-Version`, `X-Capyy-Image-Expires-At`.
+
+#### C. Sửa một vùng đã dịch (user-guided repair):
+Mỗi ảnh dịch được lưu thành một session có TTL (mặc định 7 ngày). Khi phát hiện lỗi, gửi `region_id` (hoặc `bbox_2d`) và mô tả lỗi; gateway chỉ gọi lại model cho vùng đó và render lại từ ảnh gốc, không chồng chữ lên bản cũ.
+
+```bash
+curl -X POST http://localhost:1221/v1/images/img_0123456789abcdef0123456789abcdef/repair \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer local-key" \
+  -d '{
+    "instruction": "chữ 蛋 còn sót ở góc dưới trái, xoá giúp",
+    "region_ids": [2],
+    "idempotency_key": "fix-leftover-egg-1"
+  }'
+```
+
+* `region_ids`: danh sách `region_id` lấy từ response translate.
+* `bbox_2d`: `[ymin, xmin, ymax, xmax]` (0–1000) nếu muốn chọn vùng theo tọa độ.
+* `base`: chỉ hỗ trợ `original` ở v1 (tránh double text).
+* `idempotency_key`: gửi lại cùng key sẽ trả version đã lưu, không gọi model lần nữa.
+* `enable_qc`: bật thêm LLM inspection (tùy chọn); mặc định chỉ chạy **deterministic QA miễn phí** để bắt chữ nguồn còn sót.
+* Ảnh vượt quá `CAPYY_IMAGE_STORE_MAX_BYTES` (mặc định 25 MiB) bị từ chối với HTTP 413 trước khi gọi model.
+* Các endpoint phụ: `GET /v1/images/{id}` (metadata + versions), `GET /v1/images/{id}/content?version=N` (JPEG), `DELETE /v1/images/{id}`.
 
 * 🚀 **Bộ Thuật Toán & Tính Năng Đồ Họa Thông Minh:**
   * **Đo độ nghiêng tự động bằng CV thuần (`cv2.fitLine` & PCA):** Tự động phát hiện các nét ký tự gốc, lọc bỏ nhiễu biên và dùng thuật toán khớp đường thẳng L2 distance để tính góc nghiêng vật lý thực tế ($\theta = -\operatorname{degrees}(\arctan2(vy, vx))$). Đồng bộ góc nghiêng trung vị cho toàn bộ Speech Bubbles, loại bỏ hoàn toàn việc đoán mò góc nghiêng của AI.

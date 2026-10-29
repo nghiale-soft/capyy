@@ -150,7 +150,19 @@ class GatewayService:
                 emitted = False
                 async for line in provider.stream_chat(payload):
                     emitted = True
-                    yield encode_sse(line) if isinstance(line, str) else line
+                    if isinstance(line, str):
+                        # OpenAI-compatible providers yield complete SSE lines
+                        # (``data: {...}`` / ``data: [DONE]``).  Re-encoding the
+                        # whole line as the data payload produced malformed
+                        # ``data: data: {...}`` frames that strict clients
+                        # (including Hermes) reject.  Strip the upstream field
+                        # and re-encode its payload exactly once.
+                        if line.startswith("data:"):
+                            yield encode_sse(line[5:].lstrip())
+                        else:
+                            yield encode_sse(line)
+                    else:
+                        yield line
                 return
             except GatewayProviderError as error:
                 logger.warning(

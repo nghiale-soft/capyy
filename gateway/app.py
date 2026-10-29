@@ -13,11 +13,13 @@ from router import Router
 
 from .core.config import load_settings
 from .core.logging import configure_logging
-from .routes import chat, contributions, freebuff, health, history, images, messages, models, providers, tools
+from .routes import chat, contributions, freebuff, health, history, images, messages, models, providers, tools, videos
 from .services.chat_history import ChatHistoryService
 from .services.history_scan import scan_local_history
 from .services.gateway_service import GatewayService
 from .services.image_service import ImageTranslationService
+from .services.video_service import VideoTranslationService
+from .services.image_store import ImageSessionStore
 from .services.provider_crud import ProviderCrudService
 from .services.session_service import SessionService
 from .services.tool_approval import ToolApprovalService
@@ -63,6 +65,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Freebuff account pool (giữ logic cũ)
     accounts = SessionService(settings, config_store=config_store)
+
+    # Editable image translation sessions (original + rendered versions).
+    image_store = ImageSessionStore(
+        settings.image_store_dir,
+        ttl_seconds=max(0, settings.image_store_ttl_hours) * 3600,
+        max_bytes=settings.image_store_max_bytes,
+    )
+    try:
+        await asyncio.to_thread(image_store.cleanup_expired)
+    except Exception:
+        logger.exception("image session cleanup failed")
 
     # Per-project chat history
     chat_history = ChatHistoryService(settings)
@@ -124,7 +137,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.registry = registry
     app.state.router = router
     app.state.gateway = gateway
-    app.state.image_service = ImageTranslationService(gateway)
+    app.state.image_store = image_store
+    app.state.image_service = ImageTranslationService(gateway, store=image_store)
+    app.state.video_service = VideoTranslationService(gateway)
     app.state.reload_registry = _reload_registry
     app.state.logger = logger
 
@@ -167,6 +182,7 @@ def create_app() -> FastAPI:
     app.include_router(history.router)
     app.include_router(tools.router)
     app.include_router(contributions.router)
+    app.include_router(videos.router)
     return app
 
 
