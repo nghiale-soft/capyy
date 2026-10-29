@@ -102,23 +102,84 @@ def parse_hex_color(val: Any, default: tuple[int, int, int] = (255, 255, 255)) -
 
 
 def sanitize_box(box: Any) -> list[int] | None:
-    """Safely sanitize box coordinates to [ymin, xmin, ymax, xmax] integers."""
-    if not isinstance(box, (list, tuple)):
+    """Safely sanitize box coordinates to [ymin, xmin, ymax, xmax] integers.
+
+    If a list of multiple sub-boxes [[y1, x1, y2, x2], ...] is passed, returns
+    their bounding union [min_y1, min_x1, max_y2, max_x2].
+    """
+    if not isinstance(box, (list, tuple)) or len(box) == 0:
         return None
     if len(box) == 1 and isinstance(box[0], (list, tuple)):
         box = box[0]
+    if isinstance(box[0], (list, tuple)) and len(box[0]) >= 4:
+        sub_boxes: list[list[int]] = []
+        for sub in box:
+            if isinstance(sub, (list, tuple)) and len(sub) == 4:
+                try:
+                    sub_boxes.append([int(float(v)) for v in sub])
+                except (ValueError, TypeError):
+                    pass
+        if not sub_boxes:
+            return None
+        return [
+            min(b[0] for b in sub_boxes),
+            min(b[1] for b in sub_boxes),
+            max(b[2] for b in sub_boxes),
+            max(b[3] for b in sub_boxes),
+        ]
     if len(box) != 4:
         return None
     try:
         flat: list[int] = []
         for v in box:
-            if isinstance(v, (list, tuple)) and len(v) > 0:
-                flat.append(int(v[0]))
+            if isinstance(v, (list, tuple)) and len(v) == 1:
+                flat.append(int(float(v[0])))
+            elif isinstance(v, (list, tuple)):
+                return None
             else:
-                flat.append(int(v))
+                flat.append(int(float(v)))
         return flat if len(flat) == 4 else None
     except (ValueError, TypeError):
         return None
+
+
+def extract_box_list(box: Any) -> list[list[int]]:
+    """Extract a list of [ymin, xmin, ymax, xmax] boxes from a single box or nested list of boxes."""
+    if not isinstance(box, (list, tuple)) or len(box) == 0:
+        return []
+    if len(box) == 1 and isinstance(box[0], (list, tuple)):
+        box = box[0]
+    if isinstance(box[0], (list, tuple)) and len(box[0]) == 4:
+        out: list[list[int]] = []
+        for sub in box:
+            s = sanitize_box(sub)
+            if s:
+                out.append(s)
+        return out
+    single = sanitize_box(box)
+    return [single] if single else []
+
+
+def merge_adjacent_line_boxes(boxes: list[list[int]], max_h_gap: int = 80) -> list[list[int]]:
+    """Merge horizontally adjacent character/word boxes on the same line into contiguous line boxes."""
+    valid = [b for b in (sanitize_box(x) for x in boxes) if b is not None]
+    if len(valid) <= 1:
+        return valid
+    sorted_boxes = sorted(valid, key=lambda b: (b[1], b[0]))
+    merged: list[list[int]] = [list(sorted_boxes[0])]
+    for b in sorted_boxes[1:]:
+        cur = merged[-1]
+        v_overlap = min(cur[2], b[2]) - max(cur[0], b[0])
+        min_h = max(1, min(cur[2] - cur[0], b[2] - b[0]))
+        h_gap = b[1] - cur[3]
+        if v_overlap >= 0.35 * min_h and h_gap <= max_h_gap:
+            cur[0] = min(cur[0], b[0])
+            cur[1] = min(cur[1], b[1])
+            cur[2] = max(cur[2], b[2])
+            cur[3] = max(cur[3], b[3])
+        else:
+            merged.append(list(b))
+    return merged
 
 
 class ImageTranslationService:
@@ -233,13 +294,11 @@ class ImageTranslationService:
             f"   - For physical buttons, status indicators, or hardware control panels with standard universal English/icons (e.g. 'MASSAGER', 'Power', 'Auto', 'Heating', 'Low/Medium/High'), do NOT alter them unless they contain foreign Chinese characters or the user explicitly asks to translate hardware buttons.\n"
             f"   - NEVER include digital LED metrics (e.g. '0000', '00:66', '66:66'), battery percentages, or digital clock readouts in 'erase_box_2d' or 'box_2d'! They are hardware readouts, not foreign text.\n"
             f"   - DO NOT extract or alter standard Latin measurements or universal English words (e.g. '1000mm', '800mm', '500mm', 'Start') that contain NO Chinese characters!\n"
-            f"8. CHARACTER-BY-CHARACTER DETECTION & BOUNDING BOXES (CRITICAL: CHỮ NÀO KHUNG NẤY):\n"
-            f"   - 'char_boxes_2d': MUST be a list of tight individual bounding boxes [[ymin, xmin, ymax, xmax], ...] for EACH SINGLE INDIVIDUAL CHARACTER of 'original_text'!\n"
-            f"     * RULE: Character-by-character! For example: '高手' MUST be 2 separate boxes: box 1 for '高', box 2 for '手'! NEVER combine '高手' into 1 box!\n"
-            f"     * For '1000MM 高手引导线': return separate individual boxes: one for '1000MM', one for '高', one for '手', one for '引', one for '导', one for '线'!\n"
-            f"     * Every single Chinese character glyph visible on the image MUST have its own individual box in 'char_boxes_2d' so that every character is erased cleanly!\n"
-            f"   - 'erase_box_2d': [ymin, xmin, ymax, xmax] (0-1000) tight bounding box enclosing ALL foreign text characters of 'original_text' from the FIRST to the VERY LAST character.\n"
-            f"   - 'box_2d': [ymin, xmin, ymax, xmax] (0-1000) inner area available for placing translated text (must tightly frame the text label, not the entire physical widget or device screen).\n"
+            f"8. BOUNDING BOXES & LINE-LEVEL REGION INTEGRITY (CRITICAL):\n"
+            f"   - ONE REGION PER PHRASE / LINE: Each horizontal line of a headline, subtitle, pill badge, callout, or footer banner MUST be extracted as ONE single region in 'regions' containing the full line in 'original_text' (e.g. '拆装全能', '一套搞定', '家用都有', '件件顺手', '配件齐全 轻松拆卸', '性能猛兽 充满能拧1000颗螺丝') and its complete translation in 'translated_text'. NEVER split a word or phrase into single-character regions with empty 'translated_text'!\n"
+            f"   - 'erase_box_2d': MUST be a flat 4-integer array [ymin, xmin, ymax, xmax] (0-1000) tightly enclosing ALL foreign text characters of 'original_text' from the FIRST to the VERY LAST character (including any red/highlighted numbers or words on the same banner line).\n"
+            f"   - 'box_2d': MUST be a flat 4-integer array [ymin, xmin, ymax, xmax] (0-1000) for placing 'translated_text' of THIS specific line/region ONLY. If two headline lines are stacked vertically (e.g. line 1 '拆装全能' above line 2 '一套搞定'), Region 1's 'box_2d' MUST only cover line 1, and Region 2's 'box_2d' MUST only cover line 2. NEVER assign the same combined 2-line 'box_2d' to two separate regions!\n"
+            f"   - 'char_boxes_2d': Optional list of tight [ymin, xmin, ymax, xmax] boxes for individual characters/words of 'original_text'.\n"
             f"   - 'original_text': source text verbatim.\n"
             f"   - 'translated_text': concise, punchy translation in {target_language}.\n"
             f"   - 'bg_color_hex': hex color of the background immediately behind the text (e.g. '#ffffff' or '#ff7236').\n"
@@ -253,7 +312,7 @@ class ImageTranslationService:
             f"   - NEVER merge distinct visual elements with different backgrounds, colors, containers, or vertical baselines into a single region!\n"
             f"   - Each distinct line, title, pill badge, or callout sticker (e.g. a title headline above and a pill badge below) MUST be its own separate region in 'regions'!\n"
             f"   - For example, if an image has a title '方便清洗' on a starburst and a pill badge '聪明座可拆' underneath, they MUST be returned as TWO separate regions, each with its own erase_box_2d, box_2d, bg_color_hex, text_color_hex, inpaint_strategy, and rotation_deg!\n"
-            f"   - For translation: words/phrases sharing the same horizontal line and styling (e.g. '升级四轮 全息面板') must be translated cohesively in 'translated_text' (e.g. '4 BÁNH NÂNG CẤP • MÀN HÌNH TOÀN ẢNH' or 'ĐƯỜNG DẪN 1000MM CHO NGƯỜI GIỎI'). However, for erasure: MUST provide tight bounding boxes for each individual word/cluster in 'char_boxes_2d' so that every single character is cleanly boxed and erased!\n"
+            f"   - Words/phrases sharing the same horizontal banner line (e.g. '升级四轮 全息面板' or '性能猛兽 充满能拧1000颗螺丝') must be translated cohesively in 'translated_text' (e.g. '4 BÁNH NÂNG CẤP • MÀN HÌNH TOÀN ẢNH' or 'HIỆU NĂNG MẠNH MẼ • VẶN 1000 CON ỐC') with 'erase_box_2d' spanning the entire line from first to last character!\n"
             f"10. ACCURATE SLANT / ROTATION DETECTION & CONVENTION:\n"
             f"   - 'rotation_deg': integer rotation in degrees (-180 to 180).\n"
             f"   - Positive degrees (+15, +20, +25): rotates counter-clockwise, meaning text rises UPWARDS to the right (starts lower on the left, angles up toward top-right).\n"
@@ -906,6 +965,50 @@ class ImageTranslationService:
             else:
                 normalized.append(r)
 
+        # Normalize box structures and prevent shared multi-line group boxes from causing overlapping text
+        for reg in normalized:
+            raw_erase = reg.get("erase_box_2d")
+            raw_box = reg.get("box_2d")
+            erase_sub_boxes = extract_box_list(raw_erase)
+            if len(erase_sub_boxes) > 1 and not reg.get("char_boxes_2d"):
+                reg["char_boxes_2d"] = erase_sub_boxes
+            s_erase = sanitize_box(raw_erase)
+            s_box = sanitize_box(raw_box)
+            if s_erase and not s_box:
+                s_box = list(s_erase)
+            elif s_box and not s_erase:
+                s_erase = list(s_box)
+            if s_erase:
+                reg["erase_box_2d"] = s_erase
+            if s_box:
+                reg["box_2d"] = s_box
+            if s_erase and s_box:
+                ey1, ex1, ey2, ex2 = s_erase
+                by1, bx1, by2, bx2 = s_box
+                eh = ey2 - ey1
+                bh = by2 - by1
+                if eh >= 15 and bh > eh * 1.35:
+                    reg["box_2d"] = [ey1, bx1, ey2, bx2]
+                    if str(reg.get("align_v") or "").lower() == "top":
+                        reg["align_v"] = "center"
+
+        # Second pass: if two regions still have heavily overlapping box_2d while their erase_box_2d are distinct
+        for i in range(len(normalized)):
+            for j in range(i + 1, len(normalized)):
+                bi = sanitize_box(normalized[i].get("box_2d"))
+                bj = sanitize_box(normalized[j].get("box_2d"))
+                ei = sanitize_box(normalized[i].get("erase_box_2d"))
+                ej = sanitize_box(normalized[j].get("erase_box_2d"))
+                if bi and bj and ei and ej:
+                    v_ov = min(bi[2], bj[2]) - max(bi[0], bj[0])
+                    h_ov = min(bi[3], bj[3]) - max(bi[1], bj[1])
+                    min_bh = max(1, min(bi[2] - bi[0], bj[2] - bj[0]))
+                    min_bw = max(1, min(bi[3] - bi[1], bj[3] - bj[1]))
+                    e_v_ov = min(ei[2], ej[2]) - max(ei[0], ej[0])
+                    if v_ov > 0.55 * min_bh and h_ov > 0.55 * min_bw and e_v_ov < 0.25 * max(1, min(ei[2] - ei[0], ej[2] - ej[0])):
+                        normalized[i]["box_2d"] = [ei[0], bi[1], ei[2], bi[3]]
+                        normalized[j]["box_2d"] = [ej[0], bj[1], ej[2], bj[3]]
+
         # Region ids are the stable handle used by the repair API. Assign them
         # once, in Python, so a model that reorders its output cannot break the
         # mapping between a user request and a stored region.
@@ -1157,7 +1260,7 @@ class ImageTranslationService:
     ) -> int:
         """Auto-expand bounding box to the right if characters or strokes were cut off by LLM."""
         char_h = max(14, y2 - y1)
-        max_scan_r = min(w, x2 + max(int(0.20 * w), int(char_h * 5.5)))
+        max_scan_r = min(w, x2 + min(int(0.15 * w), int(char_h * 2.5)))
         scan_y1 = max(0, y1 - 2)
         scan_y2 = min(h, y2 + 2)
         if max_scan_r > x2:
@@ -1165,10 +1268,13 @@ class ImageTranslationService:
             bg_val = float(bg_lum) if bg_lum is not None and bg_lum >= 0 else float(np.median(gray_full[scan_y1:scan_y2, max(0, x2 - char_h):x2]))
             diff = np.abs(lookahead_r.astype(np.float32) - bg_val)
             col_std = np.std(lookahead_r.astype(np.float32), axis=0)
-            ink_r = (np.sum(diff > 25, axis=0) >= 2) & (col_std > 5)
+            ink_r = (np.sum(diff > 25, axis=0) >= 2) & (col_std > 5) & (np.mean(diff > 25, axis=0) <= 0.90)
+            # Only expand if ink is present near the current right boundary (character was actually clipped)
+            if not np.any(ink_r[: min(14, len(ink_r))]):
+                return x2
             gap = 0
             last_ink_col = -1
-            max_gap = max(24, int(char_h * 1.5))
+            max_gap = min(24, max(10, int(char_h * 0.45)))
             for c_idx, has_ink in enumerate(ink_r):
                 if has_ink:
                     last_ink_col = c_idx
@@ -1194,7 +1300,7 @@ class ImageTranslationService:
     ) -> int:
         """Auto-expand bounding box to the left if leading characters were cut off by LLM."""
         char_h = max(14, y2 - y1)
-        min_scan_l = max(0, x1 - max(int(0.12 * w), int(char_h * 3.5)))
+        min_scan_l = max(0, x1 - min(int(0.12 * w), int(char_h * 2.0)))
         scan_y1 = max(0, y1 - 2)
         scan_y2 = min(h, y2 + 2)
         if min_scan_l < x1:
@@ -1202,10 +1308,13 @@ class ImageTranslationService:
             bg_val = float(bg_lum) if bg_lum is not None and bg_lum >= 0 else float(np.median(lookahead_l))
             diff = np.abs(lookahead_l.astype(np.float32) - bg_val)
             col_std = np.std(lookahead_l.astype(np.float32), axis=0)
-            ink_l = (np.sum(diff > 25, axis=0) >= 2) & (col_std > 5)
+            ink_l = (np.sum(diff > 25, axis=0) >= 2) & (col_std > 5) & (np.mean(diff > 25, axis=0) <= 0.90)
+            # Only expand if ink is present near the current left boundary (character was actually clipped)
+            if not np.any(ink_l[max(0, len(ink_l) - 14) :]):
+                return x1
             gap = 0
             first_ink_col = -1
-            max_gap = max(20, int(char_h * 1.2))
+            max_gap = min(20, max(10, int(char_h * 0.45)))
             for c_idx in range(len(ink_l) - 1, -1, -1):
                 if ink_l[c_idx]:
                     first_ink_col = c_idx
@@ -1217,6 +1326,42 @@ class ImageTranslationService:
             if first_ink_col >= 0:
                 x1 = max(0, min_scan_l + first_ink_col - 5)
         return x1
+
+    @staticmethod
+    def _expand_box_top(
+        gray_full: np.ndarray,
+        y1: int,
+        x1: int,
+        y2: int,
+        x2: int,
+        h: int,
+        w: int,
+        bg_lum: float,
+    ) -> int:
+        """Auto-expand bounding box upward if character ascenders or dots were clipped by LLM."""
+        char_h = max(14, y2 - y1)
+        min_scan_t = max(0, y1 - min(int(0.10 * h), int(char_h * 0.60)))
+        if min_scan_t < y1 and x2 > x1:
+            lookahead_t = gray_full[min_scan_t:y1, x1:x2]
+            bg_val = float(bg_lum) if bg_lum is not None and bg_lum >= 0 else float(np.median(lookahead_t))
+            diff = np.abs(lookahead_t.astype(np.float32) - bg_val)
+            ink_rows = (np.sum(diff > 30, axis=1) >= 4) & (np.mean(diff > 30, axis=1) <= 0.85)
+            if not np.any(ink_rows[max(0, len(ink_rows) - 8) :]):
+                return y1
+            gap = 0
+            first_ink_row = -1
+            max_gap = min(16, max(6, int(char_h * 0.35)))
+            for r_idx in range(len(ink_rows) - 1, -1, -1):
+                if ink_rows[r_idx]:
+                    first_ink_row = r_idx
+                    gap = 0
+                else:
+                    gap += 1
+                    if gap > max_gap:
+                        break
+            if first_ink_row >= 0:
+                y1 = max(0, min_scan_t + first_ink_row - 4)
+        return y1
 
     @staticmethod
     def _fit_robust_line(pts_in: np.ndarray) -> float | None:
@@ -1265,6 +1410,86 @@ class ImageTranslationService:
         return best_deg
 
     @staticmethod
+    def _inpaint_roi_gradient_aware(
+        roi: np.ndarray,
+        x1: int = 0,
+        y1: int = 0,
+        region_char_components: list[dict[str, Any]] | None = None,
+    ) -> np.ndarray | None:
+        """Horizontal gradient-preserving row interpolation for titles/banners on smooth studio or gradient backdrops."""
+        roi_h, roi_w = roi.shape[:2]
+        if roi_h < 12 or roi_w < 24:
+            return None
+        strip_w = min(8, max(3, roi_w // 12))
+        left_raw = roi[:, :strip_w, :]
+        right_raw = roi[:, roi_w - strip_w :, :]
+        left_strip = np.median(left_raw, axis=1, keepdims=True).astype(np.uint8)
+        right_strip = np.median(right_raw, axis=1, keepdims=True).astype(np.uint8)
+        k_v = min(15, roi_h if roi_h % 2 == 1 else roi_h - 1)
+        if k_v >= 3:
+            left_strip = cv2.medianBlur(left_strip, k_v)
+            right_strip = cv2.medianBlur(right_strip, k_v)
+        left_bg = left_strip.astype(np.float32)
+        right_bg = right_strip.astype(np.float32)
+
+        lr_diff = float(np.median(np.abs(left_bg - right_bg)))
+        l_noise = float(np.median(np.abs(left_raw.astype(np.float32) - left_bg)))
+        r_noise = float(np.median(np.abs(right_raw.astype(np.float32) - right_bg)))
+        if lr_diff >= 32.0 or l_noise >= 18.0 or r_noise >= 18.0:
+            return None
+
+        roi_f = roi.astype(np.float32)
+        alpha = np.linspace(0.0, 1.0, roi_w, dtype=np.float32)[None, :, None]
+        bg_surface = left_bg * (1.0 - alpha) + right_bg * alpha
+
+        dev = np.max(np.abs(roi_f - bg_surface), axis=2)
+        raw_mask = (dev > 18.0).astype(np.uint8) * 255
+        raw_mask[:, :2] = 0
+        raw_mask[:, -2:] = 0
+
+        if region_char_components is not None:
+            num_l, _, stats, centroids = cv2.connectedComponentsWithStats(raw_mask)
+            for i in range(1, num_l):
+                cx, cy, cw, ch, area = stats[i]
+                if 6 <= area < 0.55 * roi_h * roi_w:
+                    region_char_components.append(
+                        {
+                            "cx": float(x1 + centroids[i][0]),
+                            "cy": float(y1 + centroids[i][1]),
+                            "area": float(area),
+                            "w": int(cw),
+                            "h": int(ch),
+                        }
+                    )
+
+        mask = cv2.dilate(
+            raw_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+        )
+        mask[:, :2] = 0
+        mask[:, -2:] = 0
+
+        out = roi_f.copy()
+        roi_v_smooth = cv2.GaussianBlur(out, (1, 7), 0)
+        xs = np.arange(roi_w)
+        for y in range(roi_h):
+            m_row = mask[y] > 0
+            if not np.any(m_row):
+                continue
+            unmasked_x = xs[~m_row]
+            if len(unmasked_x) >= 2:
+                for c in range(3):
+                    out[y, m_row, c] = np.interp(
+                        xs[m_row], unmasked_x, roi_v_smooth[y, ~m_row, c]
+                    )
+            else:
+                out[y, m_row] = bg_surface[y, m_row]
+
+        blurred = cv2.GaussianBlur(out, (5, 5), 0)
+        m3 = (mask > 0)[:, :, None]
+        out = np.where(m3, blurred, roi_f)
+        return np.clip(out, 0, 255).astype(np.uint8)
+
+    @staticmethod
     def _inpaint_strategy_telea_context(
         roi: np.ndarray,
         gray: np.ndarray,
@@ -1278,6 +1503,7 @@ class ImageTranslationService:
     ) -> np.ndarray:
         """Context-aware inpainting for marketing text floating over photo backgrounds."""
         roi_h, roi_w = gray.shape
+        roi_f = roi.astype(np.float32)
 
         # 1. Color distance mask (if text_bgr is provided)
         color_mask = np.zeros((roi_h, roi_w), dtype=np.uint8)
@@ -1286,26 +1512,34 @@ class ImageTranslationService:
         if text_bgr is not None:
             bg_text_dist = float(np.linalg.norm(bg_est.astype(np.float32) - text_bgr))
             thresh_text = min(65.0, max(25.0, bg_text_dist * 0.55))
-            d_text = np.linalg.norm(roi.astype(np.float32) - text_bgr, axis=2)
+            d_text = np.linalg.norm(roi_f - text_bgr, axis=2)
+            text_only_mask = (d_text < thresh_text).astype(np.uint8) * 255
+            color_mask = text_only_mask
             if stroke_bgr is not None:
                 bg_stroke_dist = float(np.linalg.norm(bg_est.astype(np.float32) - stroke_bgr))
-                thresh_stroke = min(65.0, max(25.0, bg_stroke_dist * 0.55))
-                d_stroke = np.linalg.norm(roi.astype(np.float32) - stroke_bgr, axis=2)
-                color_mask = ((d_text < thresh_text) | (d_stroke < thresh_stroke)).astype(np.uint8) * 255
-            else:
-                color_mask = (d_text < thresh_text).astype(np.uint8) * 255
+                if bg_stroke_dist >= 65.0:
+                    thresh_stroke = min(60.0, max(25.0, bg_stroke_dist * 0.50))
+                    d_stroke = np.linalg.norm(roi_f - stroke_bgr, axis=2)
+                    combined_stroke = ((d_text < thresh_text) | (d_stroke < thresh_stroke)).astype(np.uint8) * 255
+                    if np.mean(combined_stroke > 0) <= 0.45:
+                        color_mask = combined_stroke
 
             if text_lum >= 220:
                 bright_spike = (gray >= 235).astype(np.uint8) * 255
                 if 0.01 <= np.mean(bright_spike > 0) <= 0.45:
                     color_mask = cv2.bitwise_or(color_mask, bright_spike)
 
-        # 2. Otsu adaptive bimodal contrast mask (optimal separation of text ink from background)
+        # 2. Multi-channel deviation & Otsu adaptive bimodal contrast mask (handles multi-color text like white + red)
         is_text_bright = (text_lum > bg_gray) if abs(text_lum - bg_gray) > 15 else (bg_gray < 128)
         if is_text_bright:
             _, otsu_mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         else:
             _, otsu_mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+        max_ch_diff = np.clip(np.max(np.abs(roi_f - bg_est.astype(np.float32)), axis=2), 0, 255).astype(np.uint8)
+        _, ch_otsu_mask = cv2.threshold(max_ch_diff, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        if 0.02 <= np.mean(ch_otsu_mask > 0) <= 0.55:
+            otsu_mask = cv2.bitwise_or(otsu_mask, ch_otsu_mask)
 
         color_ratio = np.mean(color_mask > 0)
         otsu_ratio = np.mean(otsu_mask > 0)
@@ -1320,7 +1554,7 @@ class ImageTranslationService:
         elif 0.02 <= otsu_ratio <= 0.70:
             raw_mask = otsu_mask
         else:
-            diff = np.linalg.norm(roi.astype(np.float32) - bg_est.astype(np.float32), axis=2)
+            diff = np.linalg.norm(roi_f - bg_est.astype(np.float32), axis=2)
             m_c = (np.abs(gray.astype(np.float32) - bg_gray) > 28).astype(np.uint8) * 255
             raw_mask = cv2.bitwise_or((diff > 35).astype(np.uint8) * 255, m_c)
 
@@ -1339,7 +1573,7 @@ class ImageTranslationService:
                     "w": int(cw),
                     "h": int(ch),
                 })
-        return cv2.dilate(clean_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+        return cv2.dilate(clean_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
 
     @staticmethod
     def _inpaint_strategy_watermark_cleanup(
@@ -1402,23 +1636,19 @@ class ImageTranslationService:
                 boxes_to_erase: list[list[int]] = []
                 char_boxes = r.get("char_boxes_2d") or r.get("word_boxes_2d") or r.get("words_2d")
                 if isinstance(char_boxes, list) and len(char_boxes) > 0:
-                    for b in char_boxes:
-                        s_box = sanitize_box(b)
-                        if s_box:
-                            boxes_to_erase.append(s_box)
+                    boxes_to_erase.extend(extract_box_list(char_boxes))
 
                 if not boxes_to_erase:
-                    erase_box = sanitize_box(r.get("erase_box_2d"))
-                    if erase_box:
-                        boxes_to_erase.append(erase_box)
+                    boxes_to_erase.extend(extract_box_list(r.get("erase_box_2d")))
 
                 if not boxes_to_erase:
-                    fallback_box = sanitize_box(r.get("box_2d"))
-                    if fallback_box:
-                        boxes_to_erase.append(fallback_box)
+                    boxes_to_erase.extend(extract_box_list(r.get("box_2d")))
 
                 if not boxes_to_erase:
                     continue
+
+                # Merge horizontally adjacent character boxes on the same line so ROI borders always sit in clean background outside the line
+                boxes_to_erase = merge_adjacent_line_boxes(boxes_to_erase, max_h_gap=80)
 
                 bg_hex = r.get("bg_color_hex") or r.get("bg_color")
                 text_hex = r.get("text_color_hex") or r.get("text_color")
@@ -1522,7 +1752,8 @@ class ImageTranslationService:
                 for erase_box in boxes_to_erase:
                     ymin, xmin, ymax, xmax = erase_box
 
-                    margin = 8
+                    is_real_doodle_container = is_pill_badge or is_bubble_group or container_shape in ("pill", "bubble", "circle", "cloud")
+                    margin = 8 if is_real_doodle_container else 12
                     actual_ymin = 0 if (ymin < 30 and (ymin < ymax - 15)) else max(0, int(ymin * h / 1000) - margin)
                     x1 = max(0, min(w - 1, int(xmin * w / 1000) - margin))
                     y1 = max(0, min(h - 1, actual_ymin))
@@ -1537,19 +1768,27 @@ class ImageTranslationService:
                         if x2_exp > x2:
                             logger.info("Auto-expanded box right: x2 from %d to %d for '%s'", x2, x2_exp, r.get("original_text", ""))
                             x2 = x2_exp
-                            if "box_2d" in r and isinstance(r["box_2d"], list) and len(r["box_2d"]) == 4:
-                                r["box_2d"][3] = min(1000, max(r["box_2d"][3], int(x2 * 1000 / w)))
-                            if "erase_box_2d" in r and isinstance(r["erase_box_2d"], list) and len(r["erase_box_2d"]) == 4:
-                                r["erase_box_2d"][3] = min(1000, max(r["erase_box_2d"][3], int(x2 * 1000 / w)))
 
                         x1_exp = self._expand_box_left(gray_full, y1, x1, y2, x2, h, w, bg_lum)
                         if x1_exp < x1:
                             logger.info("Auto-expanded box left: x1 from %d to %d for '%s'", x1, x1_exp, r.get("original_text", ""))
                             x1 = x1_exp
-                            if "box_2d" in r and isinstance(r["box_2d"], list) and len(r["box_2d"]) == 4:
-                                r["box_2d"][1] = max(0, min(r["box_2d"][1], int(x1 * 1000 / w)))
-                            if "erase_box_2d" in r and isinstance(r["erase_box_2d"], list) and len(r["erase_box_2d"]) == 4:
-                                r["erase_box_2d"][1] = max(0, min(r["erase_box_2d"][1], int(x1 * 1000 / w)))
+
+                        # Guard upward expansion from encroaching on any region immediately above this line
+                        min_allowed_y = 0
+                        for other in regions:
+                            if other is r:
+                                continue
+                            other_eb = sanitize_box(other.get("erase_box_2d"))
+                            if other_eb and other_eb[2] <= ymin:
+                                h_ov = min(xmax, other_eb[3]) - max(xmin, other_eb[1])
+                                if h_ov > 0:
+                                    min_allowed_y = max(min_allowed_y, int(other_eb[2] * h / 1000) + 2)
+
+                        y1_exp = self._expand_box_top(gray_full, y1, x1, y2, x2, h, w, bg_lum)
+                        if y1_exp < y1 and y1_exp >= min_allowed_y:
+                            logger.info("Auto-expanded box top: y1 from %d to %d for '%s'", y1, y1_exp, r.get("original_text", ""))
+                            y1 = y1_exp
                     roi = cv_bgr[y1:y2, x1:x2]
                     if roi.size == 0:
                         continue
@@ -1566,7 +1805,6 @@ class ImageTranslationService:
 
                     # Determine inpaint strategy (AI-directed with autonomous heuristic fallback)
                     strategy = str(r.get("inpaint_strategy") or "").strip().lower()
-                    is_real_doodle_container = is_pill_badge or is_bubble_group or container_shape in ("pill", "bubble", "circle", "cloud")
                     if not strategy:
                         if is_packaging and bg_lum > 180:
                             strategy = "perspective_surface"
@@ -1650,9 +1888,22 @@ class ImageTranslationService:
                             roi, gray, bg_est, bg_gray
                         )
                     elif strategy == "flat_color_patch":
-                        cv_bgr[y1:y2, x1:x2] = bg_bgr.astype(np.uint8)
+                        grad_inpainted = self._inpaint_roi_gradient_aware(
+                            roi, x1=x1, y1=y1, region_char_components=region_char_components
+                        )
+                        if grad_inpainted is not None:
+                            cv_bgr[y1:y2, x1:x2] = grad_inpainted
+                        else:
+                            cv_bgr[y1:y2, x1:x2] = bg_bgr.astype(np.uint8)
                         continue
                     else:
+                        if abs(int(r.get("rotation_deg") or 0)) < 5:
+                            grad_inpainted = self._inpaint_roi_gradient_aware(
+                                roi, x1=x1, y1=y1, region_char_components=region_char_components
+                            )
+                            if grad_inpainted is not None:
+                                cv_bgr[y1:y2, x1:x2] = grad_inpainted
+                                continue
                         dilated = self._inpaint_strategy_telea_context(
                             roi,
                             gray,
@@ -1902,9 +2153,28 @@ class ImageTranslationService:
                 is_header_elem and not is_container_elem and not is_badge
             )
             if is_free_floating_title and x1 < int(w * 0.35):
-                safe_max_x = int(w * 0.60)
-                if safe_max_x > x1:
-                    avail_w = max(avail_w, safe_max_x - x1)
+                safe_max_x = min(w - 10, int(w * 0.60))
+                if safe_max_x > x2 + 10 and y2 > y1 + 4:
+                    probe_arr = np.array(
+                        out.crop((max(0, x2 - 6), y1, safe_max_x, y2)), dtype=np.float32
+                    )
+                    if probe_arr.shape[1] > 6:
+                        ref_col = np.median(probe_arr[:, :6, :], axis=(0, 1))
+                        col_devs = np.percentile(
+                            np.max(np.abs(probe_arr[:, 6:, :] - ref_col), axis=2),
+                            85,
+                            axis=0,
+                        )
+                        obstacle_cols = np.where(col_devs > 28.0)[0]
+                        safe_x2 = (
+                            (x2 + int(obstacle_cols[0]) - 8)
+                            if len(obstacle_cols) > 0
+                            else safe_max_x
+                        )
+                        if safe_x2 > x2:
+                            avail_w = max(avail_w, safe_x2 - x1 - 2 * pad_x)
+                            x2 = safe_x2
+                            box_w = max(10, x2 - x1)
 
             translated_text = str(r.get("translated_text", "")).strip().rstrip(",;.:-")
             if not translated_text:
@@ -2002,7 +2272,7 @@ class ImageTranslationService:
                             13, min(int(min(avail_w, avail_h) * 0.22), 20)
                         )
                 elif container_shape in ("ribbon", "strip") or is_horizontal_banner:
-                    max_single_sz = min(28, max(13, int(avail_h * 0.65)))
+                    max_single_sz = min(85, max(13, int(avail_h * 0.72)))
                 elif container_shape in ("bubble", "circle", "cloud") or is_bubble:
                     max_single_sz = min(28, max(14, int(avail_h * 0.65)))
                 elif container_shape == "pill" or is_pill_badge:
@@ -2063,7 +2333,10 @@ class ImageTranslationService:
             is_title = is_header_elem or policy == "hero_impact_wrap"
             if not is_single_line_only and multi_sz and single_sz:
                 if is_title:
-                    if multi_sz >= int(single_sz * 1.15) or single_sz < int(avail_h * 0.50):
+                    if multi_sz > single_sz and (
+                        multi_sz >= int(single_sz * 1.15)
+                        or single_sz < int(avail_h * 0.45)
+                    ):
                         best_font = multi_font
                         best_size = multi_sz
                         best_lines = multi_lines
