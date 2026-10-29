@@ -58,6 +58,31 @@ class BillingService:
     def jwt_expire_hours(self) -> int:
         return int(getattr(self.settings, "jwt_expire_hours", 720))
 
+    @property
+    def app_credentials_map(self) -> dict[str, str]:
+        raw = getattr(
+            self.settings,
+            "app_credentials",
+            (
+                ("cross-border", "cb_secret_chinhthien_2026"),
+                ("dopa-english", "dopa_secret_chinhthien_2026"),
+            ),
+        )
+        if isinstance(raw, dict):
+            return {str(k): str(v) for k, v in raw.items()}
+        return {str(k): str(v) for k, v in raw}
+
+    def verify_app_credentials(self, app_id: str, secret_key: str) -> str:
+        """Verify appId + secretKey and return the wallet userId ('app:<appId>')."""
+        clean_id = (app_id or "").strip()
+        clean_secret = (secret_key or "").strip()
+        expected = self.app_credentials_map.get(clean_id)
+        if not clean_id or not clean_secret or not expected:
+            raise HTTPException(status_code=401, detail="Invalid appId or secretKey")
+        if not hmac.compare_digest(expected.encode("utf-8"), clean_secret.encode("utf-8")):
+            raise HTTPException(status_code=401, detail="Invalid appId or secretKey")
+        return f"app:{clean_id}"
+
     def create_access_token(
         self,
         user_id: str,
@@ -152,7 +177,18 @@ class BillingService:
     def extract_user_id(self, request: Request) -> str:
         headers = request.headers
 
-        # 1. Check Authorization: Bearer <accessToken>
+        # 1. Check App credentials (X-App-Id + X-Secret-Key / X-App-Secret)
+        app_id = headers.get("x-app-id") or headers.get("X-App-Id")
+        secret_key = (
+            headers.get("x-secret-key")
+            or headers.get("X-Secret-Key")
+            or headers.get("x-app-secret")
+            or headers.get("X-App-Secret")
+        )
+        if app_id or secret_key:
+            return self.verify_app_credentials(app_id or "", secret_key or "")
+
+        # 2. Check Authorization: Bearer <accessToken>
         auth = headers.get("authorization") or headers.get("Authorization")
         if auth and auth.startswith("Bearer "):
             token = auth.split(" ", 1)[1].strip()
@@ -171,7 +207,7 @@ class BillingService:
                 if not x_uid:
                     return token
 
-        # 2. Check X-User-Id / X-Client-Id headers
+        # 3. Check X-User-Id / X-Client-Id headers
         user_id = (
             headers.get("x-user-id")
             or headers.get("X-User-Id")
@@ -240,11 +276,11 @@ class BillingService:
         required_credits: int | None = None,
     ) -> str:
         """Pre-check credit balance before starting heavy AI processing."""
+        user_id = self.extract_user_id(request)
         if not self.billing_enabled:
             return "anonymous_local"
 
-        user_id = self.extract_user_id(request)
-        required = required_credits or (1 if resource_type == "image" else 5)
+        required = required_credits or (5 if resource_type == "video" else 1)
 
         try:
             current_balance = await self.get_balance(user_id)

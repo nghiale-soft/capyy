@@ -11,9 +11,12 @@ from providers.freebuff import CodebuffError
 
 from ..core.logging import log_curl, redact_headers, render_debug
 from ..deps import (
+    check_and_reserve_credit,
     check_local_auth,
+    deduct_credit,
     detect_client,
     error_response,
+    get_billing_service,
     get_settings,
     provider_label,
 )
@@ -107,12 +110,36 @@ async def chat_completions(
             render_debug(body, settings.log_body_chars),
         )
 
+    # Pre-check credit balance if billing is enabled and caller is identified (user or appId)
+    billing_user_id = get_billing_service(request).extract_user_id(request)
+    if billing_user_id != "anonymous_local":
+        billing_user_id = await check_and_reserve_credit(
+            request, resource_type="chat", required_credits=1
+        )
+
     # Freebuff provider -> giữ nguyên logic cũ (session/run-chain/ads)
     if gateway.is_freebuff(provider_id):
-        return await _freebuff_chat(request, body, settings)
+        res = await _freebuff_chat(request, body, settings)
+        if billing_user_id != "anonymous_local":
+            await deduct_credit(
+                user_id=billing_user_id,
+                amount=1,
+                reference_id=f"chat_{uuid.uuid4().hex[:12]}",
+                description=f"Cappy AI chat ({real_model or body.get('model')})",
+                request=request,
+            )
+        return res
 
     # Generic openai-compatible provider
     if body.get("stream") is True:
+        if billing_user_id != "anonymous_local":
+            await deduct_credit(
+                user_id=billing_user_id,
+                amount=1,
+                reference_id=f"chat_{uuid.uuid4().hex[:12]}",
+                description=f"Cappy AI stream chat ({real_model or body.get('model')})",
+                request=request,
+            )
         return StreamingResponse(
             _safe_stream(gateway.stream_chat(provider_id, body, real_model=real_model)),
             media_type="text/event-stream",
@@ -124,6 +151,14 @@ async def chat_completions(
         )
     try:
         response = await gateway.chat(provider_id, body, real_model=real_model)
+        if billing_user_id != "anonymous_local":
+            await deduct_credit(
+                user_id=billing_user_id,
+                amount=1,
+                reference_id=f"chat_{uuid.uuid4().hex[:12]}",
+                description=f"Cappy AI chat ({real_model or body.get('model')})",
+                request=request,
+            )
         return JSONResponse(response)
     except Exception as error:
         return error_response(error, request)

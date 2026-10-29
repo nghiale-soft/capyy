@@ -79,11 +79,23 @@ def provider_label(request: Request, model: str) -> str:
 
 
 def check_local_auth(request: Request) -> None:
+    headers = request.headers
+    app_id = headers.get("x-app-id") or headers.get("X-App-Id")
+    secret_key = (
+        headers.get("x-secret-key")
+        or headers.get("X-Secret-Key")
+        or headers.get("x-app-secret")
+        or headers.get("X-App-Secret")
+    )
+    if app_id or secret_key:
+        get_billing_service(request).verify_app_credentials(app_id or "", secret_key or "")
+        return
+
     settings = get_settings(request)
     api_key = settings.local_api_key
     if not api_key:
         return
-    auth_header = request.headers.get("authorization") or ""
+    auth_header = headers.get("authorization") or ""
     if auth_header == f"Bearer {api_key}":
         return
     if auth_header.startswith("Bearer "):

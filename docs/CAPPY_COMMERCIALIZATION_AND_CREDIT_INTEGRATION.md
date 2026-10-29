@@ -258,6 +258,20 @@ Hệ thống sử dụng **1 luồng tính Coin duy nhất** cho mọi tài kho�
 * Cappy tự giải mã JWT lấy `email` (`userId`), kiểm tra số dư và trừ coin sau khi dịch hoàn tất.
 * Khi Backend Cappy trả về `HTTP 402`, Client tự động hiển thị modal quét mã VietQR để nạp thêm Credits.
 
+### 5.4. Xác thực Dự án Nội bộ (`appId` + `secretKey`) cho `Cross Border` & `DopaEnglish`
+Để các dự án vệ tinh (`Cross Border`, `DopaEnglish`, ...) gọi Cappy mà không cần đăng nhập Google nhưng **vẫn bị giới hạn & trừ Coin như một tài khoản thông thường** (chống lộ key / hacker spam làm cạn quota AI):
+* **Cấu hình (`CAPYY_APP_CREDENTIALS`)**:
+  * `cross-border` $\rightarrow$ `cb_secret_chinhthien_2026` (Ví trong bảng `wallets`: `app:cross-border`)
+  * `dopa-english` $\rightarrow$ `dopa_secret_chinhthien_2026` (Ví trong bảng `wallets`: `app:dopa-english`)
+* **Cách 1 — Gửi trực tiếp qua Header trên mỗi Request**:
+  * `X-App-Id: cross-border` (hoặc `dopa-english`)
+  * `X-Secret-Key: cb_secret_chinhthien_2026`
+* **Cách 2 — Đổi lấy JWT `accessToken` (`POST /v1/auth/app`)**:
+  * Body: `{"appId": "dopa-english", "secretKey": "dopa_secret_chinhthien_2026"}` $\rightarrow$ Trả về `accessToken` + số dư `balance`.
+* **Cơ chế bảo vệ**:
+  * Sai `secretKey` $\rightarrow$ Trả về `HTTP 401 Unauthorized`.
+  * Đúng `secretKey` $\rightarrow$ Kiểm tra số dư ví `app:<appId>` trong bảng `wallets` và trừ coin theo từng request (`1` coin/ảnh hoặc chat, `5` coins/10s video). Khi ví về `0`, hệ thống lập tức chặn `HTTP 402 Payment Required`.
+
 ---
 
 ## 6. KẾ HOẠCH TRIỂN KHAI VÀ KIỂM THỬ (VERIFICATION CHECKLIST)

@@ -98,6 +98,12 @@ class Settings:
     free_trial_credits: int = 20
     jwt_secret: str = "cappy-jwt-secret-key-chinhthien-2026"
     jwt_expire_hours: int = 720
+    # Registered internal/partner applications (appId, secretKey) pairs.
+    # Each appId still uses a coin wallet ('app:<appId>') in Pricing Gateway to prevent spam/abuse.
+    app_credentials: tuple[tuple[str, str], ...] = (
+        ("cross-border", "cb_secret_chinhthien_2026"),
+        ("dopa-english", "dopa_secret_chinhthien_2026"),
+    )
 
     @property
     def codebuff_api_url(self) -> str:
@@ -148,6 +154,21 @@ def _api_base_url() -> str:
         or os.getenv("CODEBUFF_BASE_URL")
         or "https://www.codebuff.com"
     )
+
+
+def _app_credentials() -> tuple[tuple[str, str], ...]:
+    raw = os.getenv(
+        "CAPYY_APP_CREDENTIALS",
+        "cross-border:cb_secret_chinhthien_2026,dopa-english:dopa_secret_chinhthien_2026",
+    )
+    pairs: list[tuple[str, str]] = []
+    for item in raw.split(","):
+        item = item.strip()
+        if ":" in item:
+            app_id, secret = item.split(":", 1)
+            if app_id.strip() and secret.strip():
+                pairs.append((app_id.strip(), secret.strip()))
+    return tuple(pairs)
 
 
 def load_settings() -> Settings:
@@ -227,4 +248,5 @@ def load_settings() -> Settings:
             "CAPYY_JWT_SECRET", "cappy-jwt-secret-key-chinhthien-2026"
         ),
         jwt_expire_hours=_int("CAPYY_JWT_EXPIRE_HOURS", 720),
+        app_credentials=_app_credentials(),
     )

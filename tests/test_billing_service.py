@@ -197,3 +197,94 @@ def test_google_login_and_me_routes():
         me_data = me_resp.json()["user"]
         assert me_data["userId"] == "testlogin@gmail.com"
         assert me_data["balance"] == 19
+
+
+@pytest.mark.asyncio
+async def test_app_id_and_secret_key_flow():
+    settings = SimpleNamespace(
+        billing_enabled=True,
+        pricing_gateway_url="http://pricing-gateway:8088",
+        pricing_gateway_timeout=5.0,
+        app_credentials=(
+            ("cross-border", "cb_secret_chinhthien_2026"),
+            ("dopa-english", "dopa_secret_chinhthien_2026"),
+        ),
+    )
+    service = BillingService(settings)
+
+    # 1. Valid appId + secretKey -> wallet 'app:cross-border' and deducts coin normally
+    req_valid = _mock_request({
+        "X-App-Id": "cross-border",
+        "X-Secret-Key": "cb_secret_chinhthien_2026",
+    })
+    with patch.object(service, "get_balance", new=AsyncMock(return_value=100)), \
+         patch.object(
+             httpx.AsyncClient,
+             "post",
+             new=AsyncMock(
+                 return_value=httpx.Response(
+                     200,
+                     json={"success": True},
+                     request=httpx.Request("POST", "http://pricing-gateway:8088/api/v1/credits/deduct"),
+                 )
+             ),
+         ):
+        wallet_id = await service.check_and_reserve(req_valid, resource_type="image", required_credits=1)
+        assert wallet_id == "app:cross-border"
+        res = await service.deduct_credit(wallet_id, 1, "cb_ref_1", "Cross border image translate")
+        assert res == {"success": True}
+
+    # 2. Valid appId + secretKey but 0 coins -> blocked with 402 (anti-spam protection)
+    with patch.object(service, "get_balance", new=AsyncMock(return_value=0)), \
+         patch.object(service, "grant_trial", new=AsyncMock(return_value=0)):
+        with pytest.raises(HTTPException) as exc_402:
+            await service.check_and_reserve(req_valid, resource_type="image", required_credits=1)
+        assert exc_402.value.status_code == 402
+
+    # 3. Wrong secretKey -> blocked with 401 Unauthorized
+    req_bad_secret = _mock_request({
+        "X-App-Id": "cross-border",
+        "X-Secret-Key": "wrong_secret_hacker",
+    })
+    with pytest.raises(HTTPException) as exc_401:
+        await service.check_and_reserve(req_bad_secret, resource_type="image", required_credits=1)
+    assert exc_401.value.status_code == 401
+
+
+def test_app_login_route():
+    app = FastAPI()
+    app.include_router(auth_router)
+    settings = SimpleNamespace(
+        billing_enabled=True,
+        pricing_gateway_url="http://pricing-gateway:8088",
+        pricing_gateway_timeout=5.0,
+        free_trial_credits=20,
+        jwt_secret="route-test-secret",
+        jwt_expire_hours=24,
+        app_credentials=(
+            ("cross-border", "cb_secret_chinhthien_2026"),
+            ("dopa-english", "dopa_secret_chinhthien_2026"),
+        ),
+    )
+    service = BillingService(settings)
+    app.state.settings = settings
+    app.state.billing_service = service
+    client = TestClient(app)
+
+    with patch.object(service, "get_balance", new=AsyncMock(return_value=500)):
+        resp = client.post(
+            "/v1/auth/app",
+            json={"appId": "dopa-english", "secretKey": "dopa_secret_chinhthien_2026"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["user"]["userId"] == "app:dopa-english"
+        assert body["user"]["balance"] == 500
+        assert "accessToken" in body
+
+    # Invalid secretKey returns 401
+    bad_resp = client.post(
+        "/v1/auth/app",
+        json={"appId": "dopa-english", "secretKey": "bad_key"},
+    )
+    assert bad_resp.status_code == 401

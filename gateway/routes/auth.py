@@ -27,6 +27,45 @@ class GoogleLoginRequest(BaseModel):
     )
 
 
+class AppAuthRequest(BaseModel):
+    appId: str = Field(..., description="Registered application ID (e.g. 'cross-border', 'dopa-english')")
+    secretKey: str = Field(..., description="Application secret key")
+
+
+@router.post("/app", summary="Authenticate via appId + secretKey and receive JWT accessToken + coin balance")
+async def app_login_endpoint(
+    payload: AppAuthRequest,
+    request: Request,
+) -> dict[str, Any]:
+    billing = get_billing_service(request)
+    wallet_id = billing.verify_app_credentials(payload.appId, payload.secretKey)
+
+    balance = 0
+    try:
+        balance = await billing.get_balance(wallet_id)
+        if balance == 0:
+            balance = await billing.grant_trial(wallet_id)
+    except Exception as e:
+        logger.warning("Could not fetch/grant balance from Pricing Gateway for app %s: %s", wallet_id, e)
+
+    access_token = billing.create_access_token(
+        user_id=wallet_id,
+        email=wallet_id,
+        name=f"App: {payload.appId}",
+    )
+
+    return {
+        "accessToken": access_token,
+        "tokenType": "Bearer",
+        "user": {
+            "userId": wallet_id,
+            "appId": payload.appId,
+            "name": f"App: {payload.appId}",
+            "balance": balance,
+        },
+    }
+
+
 @router.post("/google", summary="Login with Google (Gmail) and receive JWT accessToken + coin balance")
 async def google_login_endpoint(
     payload: GoogleLoginRequest,
