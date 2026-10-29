@@ -96,6 +96,8 @@ class Settings:
     pricing_gateway_timeout: float = 5.0
     billing_enabled: bool = False
     free_trial_credits: int = 20
+    jwt_secret: str = "cappy-jwt-secret-key-chinhthien-2026"
+    jwt_expire_hours: int = 720
 
     @property
     def codebuff_api_url(self) -> str:
@@ -221,4 +223,8 @@ def load_settings() -> Settings:
         ),
         billing_enabled=_bool("BILLING_ENABLED", False),
         free_trial_credits=_int("FREE_TRIAL_CREDITS", 20),
+        jwt_secret=os.getenv(
+            "CAPYY_JWT_SECRET", "cappy-jwt-secret-key-chinhthien-2026"
+        ),
+        jwt_expire_hours=_int("CAPYY_JWT_EXPIRE_HOURS", 720),
     )

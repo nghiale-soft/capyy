@@ -13,7 +13,7 @@ from router import Router
 
 from .core.config import load_settings
 from .core.logging import configure_logging
-from .routes import chat, contributions, freebuff, health, history, images, messages, models, providers, tools, videos
+from .routes import auth, chat, contributions, freebuff, health, history, images, messages, models, providers, tools, videos
 from .services.chat_history import ChatHistoryService
 from .services.history_scan import scan_local_history
 from .services.gateway_service import GatewayService
@@ -175,6 +175,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     app = FastAPI(title="capyy", version="0.1.0", lifespan=lifespan)
     app.include_router(health.router)
+    app.include_router(auth.router)
     app.include_router(models.router)
     app.include_router(chat.router)
     app.include_router(messages.router)

@@ -216,24 +216,55 @@ async with httpx.AsyncClient(base_url=settings.PRICING_GATEWAY_URL, timeout=5.0)
 
 ---
 
-## 5. ĐẶC TẢ KẾT NỐI CLIENT (WEB APP & EXTENSION)
+## 5. ĐĂNG NHẬP GOOGLE (GMAIL) & CƠ CHẾ JWT `accessToken`
 
-1. **Client lưu trữ User ID / Token**:
-   * Khi mở Extension hoặc Web App lần đầu, client sinh ra một `uuid` duy nhất lưu trong `chrome.storage.local` hoặc `localStorage` (ví dụ: `usr_cappy_8f93...`).
-2. **Hiển thị số dư thời gian thực (Credit Pill UI)**:
-   * Trên góc phải Web App và Popup Extension hiển thị huy hiệu: `⚡ 18 Credits còn lại`.
-   * Bấm vào hiện bảng nạp tiền 3 gói (50k - 150 cr, 100k - 400 cr, 200k - 1000 cr) kèm mã QR PayOS VietQR tự sinh động.
-3. **Bắt mã lỗi 402**:
-   * Khi Backend Cappy trả về HTTP 402, Client tự động hiển thị modal:
-     *"Bạn đã sử dụng hết hạn mức dùng thử. Hãy quét mã VietQR để nhận thêm 400 Credits và tiếp tục sử dụng ngay lập tức."*
+Hệ thống sử dụng **1 luồng tính Coin duy nhất** cho mọi tài khoản (không tách luồng Subscription hay Admin phức tạp). Khi cần cấp nhiều coin cho tài khoản Admin/nội bộ, chỉ cần chỉnh cột `balance` của email đó trong bảng `wallets` (database `pricing_gateway`).
+
+### 5.1. Đăng nhập Gmail nhận `accessToken`
+* **Endpoint**: `POST /v1/auth/google`
+* **Body Request**:
+```json
+{
+  "token": "<Google id_token từ Web hoặc OAuth2 access_token từ chrome.identity>"
+}
+```
+* **Luồng xử lý Backend**:
+  1. Xác thực token trực tiếp với Google (`oauth2.googleapis.com/tokeninfo` hoặc `googleapis.com/oauth2/v3/userinfo`).
+  2. Lấy địa chỉ Gmail (ví dụ `user@gmail.com`) làm `userId` định danh ví trong bảng `wallets`.
+  3. Nếu là tài khoản đăng nhập lần đầu (`balance == 0` và chưa từng nhận `TRIAL`), tự động cộng **20 Credits tân thủ**.
+  4. Ký và trả về `accessToken` (JWT HS256, thời hạn mặc định 30 ngày).
+* **Phản hồi mẫu**:
+```json
+{
+  "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "tokenType": "Bearer",
+  "user": {
+    "userId": "user@gmail.com",
+    "email": "user@gmail.com",
+    "name": "Nguyen Van A",
+    "picture": "https://lh3.googleusercontent.com/...",
+    "balance": 20
+  }
+}
+```
+
+### 5.2. Xem thông tin tài khoản & số dư Coin hiện tại
+* **Endpoint**: `GET /v1/auth/me`
+* **Headers**: `Authorization: Bearer <accessToken>`
+* **Phản hồi**: Thông tin `user` kèm `balance` thời gian thực từ `Pricing Gateway`.
+
+### 5.3. Gọi API Dịch Ảnh / Video với `accessToken`
+* Client gửi header `Authorization: Bearer <accessToken>` khi gọi `POST /v1/images/translate` hoặc `POST /v1/videos/translate`.
+* Cappy tự giải mã JWT lấy `email` (`userId`), kiểm tra số dư và trừ coin sau khi dịch hoàn tất.
+* Khi Backend Cappy trả về `HTTP 402`, Client tự động hiển thị modal quét mã VietQR để nạp thêm Credits.
 
 ---
 
 ## 6. KẾ HOẠCH TRIỂN KHAI VÀ KIỂM THỬ (VERIFICATION CHECKLIST)
 
-- [ ] **Bước 1**: Đảm bảo container `pricing-gateway` (port 8088) chạy ổn định trong `common-docker.yml`.
-- [ ] **Bước 2**: Thêm `verify_and_meter_credit` vào `gateway/deps.py` trong repo `capyy`.
-- [ ] **Bước 3**: Gọi thử test endpoint ảnh bằng `curl` kèm header `X-User-Id: test_user`:
+- [x] **Bước 1**: Đảm bảo container `pricing-gateway` (port 8088) chạy ổn định trong `common-docker.yml`.
+- [x] **Bước 2**: Tích hợp `BillingService` và `auth` routes (`/v1/auth/google`, `/v1/auth/me`) vào repo `capyy`.
+- [x] **Bước 3**: Gọi thử test endpoint ảnh bằng `curl` kèm JWT `accessToken` hoặc `X-User-Id`:
   * Lần 1-20: Trừ điểm bình thường.
   * Lần 21: Nhận HTTP 402 kèm thông tin thanh toán.
-- [ ] **Bước 4**: Thử nghiệm gọi endpoint video và xác minh số điểm bị trừ tương ứng thời lượng video.
+- [x] **Bước 4**: Thử nghiệm gọi endpoint video và xác minh số điểm bị trừ tương ứng thời lượng video.

@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-import json
 from types import SimpleNamespace
-import unittest
 from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 from starlette.requests import Request
 
-from gateway.core.config import Settings
+from gateway.routes.auth import router as auth_router
 from gateway.services.billing_service import BillingService
 
 
@@ -19,7 +18,10 @@ def _mock_request(headers: dict[str, str] | None = None) -> Request:
         "type": "http",
         "method": "POST",
         "path": "/v1/images/translate",
-        "headers": [(k.lower().encode("latin-1"), v.encode("latin-1")) for k, v in (headers or {}).items()],
+        "headers": [
+            (k.lower().encode("latin-1"), v.encode("latin-1"))
+            for k, v in (headers or {}).items()
+        ],
     }
     return Request(scope)
 
@@ -38,44 +40,43 @@ async def test_billing_disabled_by_default():
 
 
 @pytest.mark.asyncio
-async def test_user_id_extraction_headers():
-    settings = SimpleNamespace(billing_enabled=True, local_api_key="secret-gateway-key")
-    service = BillingService(settings)
-
-    # 1. X-User-Id
-    req1 = _mock_request({"x-user-id": "user_123"})
-    assert service.extract_user_id(req1) == "user_123"
-
-    # 2. X-Client-Id
-    req2 = _mock_request({"X-Client-Id": "client_abc"})
-    assert service.extract_user_id(req2) == "client_abc"
-
-    # 3. Bearer token as user ID (when not local_api_key)
-    req3 = _mock_request({"Authorization": "Bearer usr_token_xyz"})
-    assert service.extract_user_id(req3) == "usr_token_xyz"
-
-    # 4. Bearer token matching local_api_key should fallback to anonymous
-    req4 = _mock_request({"Authorization": "Bearer secret-gateway-key"})
-    assert service.extract_user_id(req4) == "anonymous_local"
-
-
-@pytest.mark.asyncio
-async def test_pro_subscription_bypasses_credits():
+async def test_jwt_create_verify_and_extract_user_id():
     settings = SimpleNamespace(
         billing_enabled=True,
-        pricing_gateway_url="http://pricing-gateway:8088",
-        pricing_gateway_timeout=5.0,
+        local_api_key="secret-gateway-key",
+        jwt_secret="my-test-jwt-secret",
+        jwt_expire_hours=24,
     )
     service = BillingService(settings)
 
-    req = _mock_request({"X-User-Id": "vip_user"})
+    # Create JWT accessToken for Gmail user
+    token = service.create_access_token(
+        user_id="admin@gmail.com",
+        email="admin@gmail.com",
+        name="Admin User",
+        picture="https://example.com/avatar.png",
+    )
+    claims = service.verify_access_token(token)
+    assert claims is not None
+    assert claims["sub"] == "admin@gmail.com"
+    assert claims["email"] == "admin@gmail.com"
 
-    with patch.object(service, "has_active_subscription", new=AsyncMock(return_value=True)):
-        user_id = await service.check_and_reserve(req, resource_type="video", required_credits=15)
-        assert user_id == "vip_user"
+    # Extract userId from Bearer JWT accessToken
+    req_jwt = _mock_request({"Authorization": f"Bearer {token}"})
+    assert service.extract_user_id(req_jwt) == "admin@gmail.com"
 
-        res = await service.deduct_credit(user_id, 15, "vid_ref", "video translation")
-        assert res == {"subscription": True, "deducted": 0}
+    # Tampered token should fail verification
+    assert service.verify_access_token(token + "tamper") is None
+
+    # Fallback headers
+    req1 = _mock_request({"x-user-id": "user_123"})
+    assert service.extract_user_id(req1) == "user_123"
+
+    req2 = _mock_request({"X-Client-Id": "client_abc"})
+    assert service.extract_user_id(req2) == "client_abc"
+
+    req4 = _mock_request({"Authorization": "Bearer secret-gateway-key"})
+    assert service.extract_user_id(req4) == "anonymous_local"
 
 
 @pytest.mark.asyncio
@@ -87,14 +88,25 @@ async def test_normal_user_sufficient_balance():
     )
     service = BillingService(settings)
 
-    req = _mock_request({"X-User-Id": "user_normal"})
+    req = _mock_request({"X-User-Id": "shopper@gmail.com"})
 
-    with patch.object(service, "has_active_subscription", new=AsyncMock(return_value=False)), \
-         patch.object(service, "get_balance", new=AsyncMock(return_value=50)), \
-         patch.object(httpx.AsyncClient, "post", new=AsyncMock(return_value=httpx.Response(200, json={"success": True}))):
-        
+    with patch.object(service, "get_balance", new=AsyncMock(return_value=50)), \
+         patch.object(
+             httpx.AsyncClient,
+             "post",
+             new=AsyncMock(
+                 return_value=httpx.Response(
+                     200,
+                     json={"success": True},
+                     request=httpx.Request("POST", "http://pricing-gateway:8088/api/v1/credits/deduct"),
+                 )
+             ),
+         ):
         user_id = await service.check_and_reserve(req, resource_type="image", required_credits=1)
-        assert user_id == "user_normal"
+        assert user_id == "shopper@gmail.com"
+
+        res = await service.deduct_credit(user_id, 1, "img_ref", "image translation")
+        assert res == {"success": True}
 
 
 @pytest.mark.asyncio
@@ -107,15 +119,13 @@ async def test_new_user_auto_grants_trial():
     )
     service = BillingService(settings)
 
-    req = _mock_request({"X-User-Id": "brand_new_user"})
+    req = _mock_request({"X-User-Id": "newuser@gmail.com"})
 
-    with patch.object(service, "has_active_subscription", new=AsyncMock(return_value=False)), \
-         patch.object(service, "get_balance", new=AsyncMock(return_value=0)), \
+    with patch.object(service, "get_balance", new=AsyncMock(return_value=0)), \
          patch.object(service, "grant_trial", new=AsyncMock(return_value=20)):
-        
         user_id = await service.check_and_reserve(req, resource_type="image", required_credits=1)
-        assert user_id == "brand_new_user"
-        service.grant_trial.assert_awaited_once_with("brand_new_user")
+        assert user_id == "newuser@gmail.com"
+        service.grant_trial.assert_awaited_once_with("newuser@gmail.com")
 
 
 @pytest.mark.asyncio
@@ -128,13 +138,10 @@ async def test_user_insufficient_credits_raises_402():
     )
     service = BillingService(settings)
 
-    req = _mock_request({"X-User-Id": "broke_user"})
+    req = _mock_request({"X-User-Id": "broke@gmail.com"})
 
-    # User has 0 balance, and grant_trial returns 0 (since trial already used previously)
-    with patch.object(service, "has_active_subscription", new=AsyncMock(return_value=False)), \
-         patch.object(service, "get_balance", new=AsyncMock(return_value=0)), \
+    with patch.object(service, "get_balance", new=AsyncMock(return_value=0)), \
          patch.object(service, "grant_trial", new=AsyncMock(return_value=0)):
-        
         with pytest.raises(HTTPException) as exc_info:
             await service.check_and_reserve(req, resource_type="image", required_credits=1)
 
@@ -144,3 +151,49 @@ async def test_user_insufficient_credits_raises_402():
         assert detail["current_balance"] == 0
         assert detail["required_credits"] == 1
         assert "checkout_url" in detail
+
+
+def test_google_login_and_me_routes():
+    app = FastAPI()
+    app.include_router(auth_router)
+    settings = SimpleNamespace(
+        billing_enabled=True,
+        pricing_gateway_url="http://pricing-gateway:8088",
+        pricing_gateway_timeout=5.0,
+        free_trial_credits=20,
+        jwt_secret="route-test-secret",
+        jwt_expire_hours=24,
+    )
+    service = BillingService(settings)
+    app.state.settings = settings
+    app.state.billing_service = service
+    client = TestClient(app)
+
+    fake_profile = {
+        "email": "testlogin@gmail.com",
+        "name": "Test Login",
+        "picture": "https://lh3.googleusercontent.com/a/default",
+        "sub": "1092837465",
+    }
+
+    with patch.object(service, "verify_google_token", new=AsyncMock(return_value=fake_profile)), \
+         patch.object(service, "get_balance", new=AsyncMock(return_value=0)), \
+         patch.object(service, "grant_trial", new=AsyncMock(return_value=20)):
+        resp = client.post("/v1/auth/google", json={"token": "fake.google.token"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "accessToken" in body
+        assert body["tokenType"] == "Bearer"
+        assert body["user"]["email"] == "testlogin@gmail.com"
+        assert body["user"]["balance"] == 20
+        access_token = body["accessToken"]
+
+    with patch.object(service, "get_balance", new=AsyncMock(return_value=19)):
+        me_resp = client.get(
+            "/v1/auth/me",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert me_resp.status_code == 200
+        me_data = me_resp.json()["user"]
+        assert me_data["userId"] == "testlogin@gmail.com"
+        assert me_data["balance"] == 19

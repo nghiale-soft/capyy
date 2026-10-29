@@ -83,9 +83,14 @@ def check_local_auth(request: Request) -> None:
     api_key = settings.local_api_key
     if not api_key:
         return
-    expected = f"Bearer {api_key}"
-    if request.headers.get("authorization") != expected:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+    auth_header = request.headers.get("authorization") or ""
+    if auth_header == f"Bearer {api_key}":
+        return
+    if auth_header.startswith("Bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+        if get_billing_service(request).verify_access_token(token) is not None:
+            return
+    raise HTTPException(status_code=401, detail="Invalid API key")
 
 
 def error_response(error: Exception, request: Request | None = None) -> Any:
