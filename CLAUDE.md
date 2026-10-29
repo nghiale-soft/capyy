@@ -2,7 +2,8 @@
 
 Read and follow:
 
-`docs/ai-read-first/START-HERE.md`
+1. `docs/ai-read-first/START-HERE.md`
+2. `docs/CAPPY_COMMERCIALIZATION_AND_CREDIT_INTEGRATION.md` (Mandatory for Cappy Image/Video localization and Pricing Gateway credit metering tasks)
 
 before analysis, planning, code changes, or command execution.
 

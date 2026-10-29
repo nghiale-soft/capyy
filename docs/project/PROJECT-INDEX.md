@@ -15,7 +15,7 @@
 | Documentation language | en (fallback: vi) |
 | Status | implemented gateway; some advanced roadmap items remain unverified |
 | Origin | Extension of a FreeBuff/Codebuff-compatible adapter |
-| Main references | `README.md`, `gateway/`, `providers/`, `tests/`, deployment configuration |
+| Main references | `README.md`, `docs/CAPPY_COMMERCIALIZATION_AND_CREDIT_INTEGRATION.md`, `gateway/`, `providers/`, `tests/`, deployment configuration |
 
 ## Documentation structure
 

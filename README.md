@@ -161,7 +161,47 @@ curl -X POST http://localhost:1221/v1/images/img_0123456789abcdef0123456789abcde
   * **Đồng bộ Font Size theo nhóm (`group_id`):** Các label có cùng `group_id` (ví dụ 4 nút tính năng) sẽ tự động dùng chung cỡ font nhỏ nhất trong nhóm để giao diện đồng bộ 100%.
   * **Căn chỉnh 2 chiều (`align_h`, `align_v`):** Tự động căn giữa, trái, phải, trên, dưới tương ứng theo vị trí nút hoặc banner.
 
-### 2.4. `GET /healthz` (Health Check)
+### 2.4. `POST /v1/videos/translate` (Dịch, Xóa Sub & Lồng Tiếng Video Sản Phẩm)
+Tự động nhận diện subtitle/chữ tiếng Trung trong video, inpainting xóa sub cũ, dịch chuẩn ngữ cảnh TMĐT/review, tạo giọng đọc lồng tiếng AI (TTS tiếng Việt Hoài My / Nam Minh), và chèn sub Việt chuẩn timing.
+
+* **Định dạng hỗ trợ:** MP4, MOV, WebM.
+* **Thời gian xử lý:** Tối ưu hóa đa luồng với ffmpeg và inpainting keyframes.
+
+#### Gửi file video (Multipart Form-Data - Nhận về trực tiếp video MP4):
+```bash
+curl -X POST http://localhost:1221/v1/videos/translate \
+  -H "Authorization: Bearer local-key" \
+  -H "X-User-Id: user_12345" \
+  -F "file=@video_douyin_1688.mp4" \
+  -F "target_language=Vietnamese" \
+  -F "voice=female" \
+  -F "cover_old_sub=true" \
+  -o translated_dubbed_video.mp4
+```
+
+---
+
+### 2.5. Hệ Thống Quản Lý Tín Dụng & Thanh Toán (Credit & Pricing Gateway Integration)
+
+Cappy tích hợp trực tiếp với microservice [Pricing Gateway](file:///Users/nghiale98/Documents/1.My%20Companies/ChinhThien/Source%20Code/Pricing%20Gateway) (cổng 8088) để quản lý số dư tín dụng cho Web App và Extension:
+
+#### Quy tắc tiêu thụ Tín dụng (Credit Rules):
+* 📸 **Dịch 1 ảnh hoàn chỉnh:** Tiêu thụ **1 Credit** (~200đ - 250đ).
+* 🎥 **Dịch 10 giây video:** Tiêu thụ **5 Credits** (quy đổi theo công thức `ceil(duration_seconds / 10) * 5`).
+  * Video 30s review Douyin = **15 Credits**.
+  * Video 60s giới thiệu sản phẩm = **30 Credits**.
+
+#### Các gói nạp tiền tự động (Napas 24/7 VietQR PayOS):
+1. 🎁 **Free Trial**: Tặng **20 Credits** cho tài khoản mới / extension mới.
+2. 🥉 **Gói 50.000 VNĐ**: **150 Credits** (~333đ/credit).
+3. 🥈 **Gói 100.000 VNĐ (Phổ thông)**: **400 Credits** (~250đ/credit).
+4. 🥇 **Gói 200.000 VNĐ (Pro/Studio)**: **1.000 Credits** (~200đ/credit).
+
+> ⚠️ **Khi số dư < mức yêu cầu:** Gateway trả về HTTP `402 Payment Required` kèm URL/QR nạp tiền để Client hiển thị modal thanh toán.
+
+---
+
+### 2.6. `GET /healthz` (Health Check)
 ```bash
 curl http://localhost:1221/healthz
 # Trả về: {"status": "ok"}
