@@ -91,6 +91,11 @@ class Settings:
     tool_permissions_file: str = "config/tool-permissions.json"
     contributions_file: str = "data/contributions.json"
     contribution_issue_repository: str = "nghiale-soft/capyy"
+    # Pricing Gateway Integration (Credit Metering & PayOS VietQR)
+    pricing_gateway_url: str = "http://pricing-gateway:8088"
+    pricing_gateway_timeout: float = 5.0
+    billing_enabled: bool = False
+    free_trial_credits: int = 20
 
     @property
     def codebuff_api_url(self) -> str:
@@ -208,4 +213,12 @@ def load_settings() -> Settings:
         ),
         contributions_file=os.getenv("CAPYY_CONTRIBUTIONS_FILE", "data/contributions.json"),
         contribution_issue_repository=os.getenv("CAPYY_CONTRIBUTION_ISSUE_REPOSITORY", "nghiale-soft/capyy"),
+        pricing_gateway_url=os.getenv(
+            "PRICING_GATEWAY_URL", "http://pricing-gateway:8088"
+        ),
+        pricing_gateway_timeout=float(
+            os.getenv("PRICING_GATEWAY_TIMEOUT", "5.0")
+        ),
+        billing_enabled=_bool("BILLING_ENABLED", False),
+        free_trial_credits=_int("FREE_TRIAL_CREDITS", 20),
     )

@@ -13,8 +13,15 @@ import wave
 from pathlib import Path
 from typing import Any
 
-import edge_tts
-import numpy as np
+try:
+    import edge_tts
+except ImportError:
+    edge_tts = None
+
+try:
+    import numpy as np
+except ImportError:
+    np = None
 
 logger = logging.getLogger("gateway.services.video")
 

@@ -18,7 +18,7 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field
 
-from ..deps import check_local_auth
+from ..deps import check_and_reserve_credit, check_local_auth, deduct_credit
 from ..services.image_store import (
     ImageSessionError,
     ImageSessionExpired,
@@ -210,6 +210,9 @@ async def translate_image_endpoint(
             detail="No image provided. Upload a file or provide 'image_base64'/'image_url' in JSON body.",
         )
 
+    # Pre-check credit balance before AI inpainting (1 credit required)
+    user_id = await check_and_reserve_credit(request, resource_type="image", required_credits=1)
+
     store = getattr(request.app.state, "image_store", None)
     if store is not None and len(image_bytes) > store.max_bytes:
         raise HTTPException(
@@ -250,6 +253,16 @@ async def translate_image_endpoint(
         raise HTTPException(
             status_code=500, detail=f"Image translation failed: {e}"
         ) from e
+
+    # Deduct 1 credit for completed image translation
+    tx_ref = f"img_{session.get('id') if session else 'tx_' + str(abs(hash(translated_bytes[:32])))}"
+    await deduct_credit(
+        user_id=user_id,
+        amount=1,
+        reference_id=tx_ref,
+        description="Cappy AI dịch ảnh sản phẩm",
+        request=request,
+    )
 
     if req_format.lower() == "json":
         b64_result = base64.b64encode(translated_bytes).decode("utf-8")

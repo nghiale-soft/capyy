@@ -19,6 +19,7 @@ from .services.history_scan import scan_local_history
 from .services.gateway_service import GatewayService
 from .services.image_service import ImageTranslationService
 from .services.video_service import VideoTranslationService
+from .services.billing_service import BillingService
 from .services.image_store import ImageSessionStore
 from .services.provider_crud import ProviderCrudService
 from .services.session_service import SessionService
@@ -140,6 +141,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.image_store = image_store
     app.state.image_service = ImageTranslationService(gateway, store=image_store)
     app.state.video_service = VideoTranslationService(gateway)
+    app.state.billing_service = BillingService(settings)
     app.state.reload_registry = _reload_registry
     app.state.logger = logger
 

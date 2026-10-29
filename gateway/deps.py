@@ -132,3 +132,39 @@ def error_response(error: Exception, request: Request | None = None) -> Any:
             },
         )
     raise error
+
+
+def get_billing_service(request: Request) -> Any:
+    service = getattr(request.app.state, "billing_service", None)
+    if service is None:
+        from .services.billing_service import BillingService
+        settings = get_settings(request)
+        service = BillingService(settings)
+        request.app.state.billing_service = service
+    return service
+
+
+async def check_and_reserve_credit(
+    request: Request,
+    resource_type: str = "image",
+    required_credits: int | None = None,
+) -> str:
+    service = get_billing_service(request)
+    return await service.check_and_reserve(request, resource_type, required_credits)
+
+
+async def deduct_credit(
+    user_id: str,
+    amount: int,
+    reference_id: str,
+    description: str,
+    request: Request | None = None,
+) -> None:
+    if request is not None:
+        service = get_billing_service(request)
+    else:
+        from .core.config import load_settings
+        from .services.billing_service import BillingService
+        service = BillingService(load_settings())
+    await service.deduct_credit(user_id, amount, reference_id, description)
+
