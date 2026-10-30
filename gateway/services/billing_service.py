@@ -26,6 +26,25 @@ def _b64url_decode(s: str) -> bytes:
 class BillingService:
     def __init__(self, settings: Any) -> None:
         self.settings = settings
+        self._local_wallets: dict[str, int] = {}
+
+    def _get_db_conn(self):
+        host = getattr(self.settings, "database_host", None)
+        if not host:
+            return None
+        import pymysql
+
+        return pymysql.connect(
+            host=host,
+            port=int(getattr(self.settings, "database_port", 3306)),
+            database=getattr(self.settings, "database_name", "capyy"),
+            user=getattr(self.settings, "database_user", "root"),
+            password=getattr(self.settings, "database_password", ""),
+            charset="utf8mb4",
+            connect_timeout=2,
+            read_timeout=3,
+            autocommit=True,
+        )
 
     @property
     def billing_enabled(self) -> bool:
@@ -79,22 +98,9 @@ class BillingService:
             return None
 
         # 1. Try DB lookup first
-        host = getattr(self.settings, "database_host", None)
-        if host:
-            try:
-                import pymysql
-
-                conn = pymysql.connect(
-                    host=host,
-                    port=int(getattr(self.settings, "database_port", 3306)),
-                    database=getattr(self.settings, "database_name", "capyy"),
-                    user=getattr(self.settings, "database_user", "root"),
-                    password=getattr(self.settings, "database_password", ""),
-                    charset="utf8mb4",
-                    connect_timeout=2,
-                    read_timeout=3,
-                    autocommit=True,
-                )
+        try:
+            conn = self._get_db_conn()
+            if conn:
                 with conn:
                     with conn.cursor() as cursor:
                         cursor.execute(
@@ -104,8 +110,8 @@ class BillingService:
                         row = cursor.fetchone()
                         if row and row[0]:
                             return str(row[0])
-            except Exception as e:
-                logger.debug("DB lookup for app_credentials failed: %s", e)
+        except Exception as e:
+            logger.debug("DB lookup for app_credentials failed: %s", e)
 
         # 2. Fallback to static app_credentials map in config
         return self.app_credentials_map.get(clean_id)
@@ -258,25 +264,78 @@ class BillingService:
         return "anonymous_local"
 
     async def get_balance(self, user_id: str) -> int:
-        """Fetch current credit balance for user from Pricing Gateway."""
-        url = f"{self.pricing_gateway_url}/api/v1/credits/{user_id}/balance"
-        async with httpx.AsyncClient(timeout=self.pricing_gateway_timeout) as client:
-            resp = await client.get(url)
-            if resp.status_code == 404:
-                return 0
-            resp.raise_for_status()
-            data = resp.json()
-            return int(data.get("data", {}).get("balance", 0))
+        """Fetch current credit balance for user directly from capyy.wallets."""
+        try:
+            conn = self._get_db_conn()
+            if conn:
+                with conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT balance FROM wallets WHERE user_id = %s",
+                            (user_id,),
+                        )
+                        row = cursor.fetchone()
+                        if row is not None:
+                            return int(row[0])
+                        # If wallet does not exist yet: initialize with trial credits (or 10000 for apps/local)
+                        init_bal = (
+                            10000
+                            if (user_id.startswith("app:") or user_id in ("local-key", "anonymous_local"))
+                            else self.free_trial_credits
+                        )
+                        cursor.execute(
+                            "INSERT INTO wallets (user_id, balance) VALUES (%s, %s) "
+                            "ON DUPLICATE KEY UPDATE balance = balance",
+                            (user_id, init_bal),
+                        )
+                        cursor.execute(
+                            "INSERT INTO coin_transactions (user_id, amount, balance_after, reference_id, description) "
+                            "VALUES (%s, %s, %s, %s, %s)",
+                            (user_id, init_bal, init_bal, "init", "Khởi tạo ví mới"),
+                        )
+                        return init_bal
+        except Exception as e:
+            logger.debug("Local DB get_balance failed, using fallback: %s", e)
+
+        return self._local_wallets.get(user_id, self.free_trial_credits)
+
+    async def topup(
+        self,
+        user_id: str,
+        amount: int,
+        reference_id: str = "",
+        description: str = "",
+    ) -> int:
+        """Add credits to a wallet in capyy.wallets (called by Pricing Gateway webhook or admin)."""
+        try:
+            conn = self._get_db_conn()
+            if conn:
+                with conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            "INSERT INTO wallets (user_id, balance) VALUES (%s, %s) "
+                            "ON DUPLICATE KEY UPDATE balance = balance + %s",
+                            (user_id, amount, amount),
+                        )
+                        cursor.execute("SELECT balance FROM wallets WHERE user_id = %s", (user_id,))
+                        new_bal = cursor.fetchone()[0]
+                        cursor.execute(
+                            "INSERT INTO coin_transactions (user_id, amount, balance_after, reference_id, description) "
+                            "VALUES (%s, %s, %s, %s, %s)",
+                            (user_id, amount, new_bal, reference_id, description),
+                        )
+                        return int(new_bal)
+        except Exception as e:
+            logger.debug("Local DB topup failed, using fallback: %s", e)
+
+        cur = self._local_wallets.get(user_id, 0)
+        self._local_wallets[user_id] = cur + amount
+        return self._local_wallets[user_id]
 
     async def grant_trial(self, user_id: str, amount: int | None = None) -> int:
-        """Grant free trial credits to new user (one-time only enforced by Pricing Gateway)."""
+        """Grant free trial credits to new user."""
         amt = amount if amount is not None else self.free_trial_credits
-        url = f"{self.pricing_gateway_url}/api/v1/credits/{user_id}/grant-trial"
-        async with httpx.AsyncClient(timeout=self.pricing_gateway_timeout) as client:
-            resp = await client.post(url, json={"amount": amt})
-            resp.raise_for_status()
-            data = resp.json()
-            return int(data.get("data", {}).get("balance", amt))
+        return await self.topup(user_id, amt, reference_id="grant_trial", description="Cộng credit dùng thử miễn phí")
 
     async def deduct_credit(
         self,
@@ -285,27 +344,41 @@ class BillingService:
         reference_id: str,
         description: str,
     ) -> dict[str, Any] | None:
-        """Deduct credits from user wallet after successful operation."""
+        """Deduct credits from user wallet directly in capyy.wallets."""
         if not self.billing_enabled:
             return None
         if user_id == "anonymous_local":
             return None
 
-        url = f"{self.pricing_gateway_url}/api/v1/credits/deduct"
-        payload = {
-            "userId": user_id,
-            "amount": amount,
-            "referenceId": reference_id,
-            "description": description,
-        }
         try:
-            async with httpx.AsyncClient(timeout=self.pricing_gateway_timeout) as client:
-                resp = await client.post(url, json=payload)
-                resp.raise_for_status()
-                return resp.json()
+            conn = self._get_db_conn()
+            if conn:
+                with conn:
+                    with conn.cursor() as cursor:
+                        affected = cursor.execute(
+                            "UPDATE wallets SET balance = balance - %s WHERE user_id = %s AND balance >= %s",
+                            (amount, user_id, amount),
+                        )
+                        if affected > 0:
+                            cursor.execute("SELECT balance FROM wallets WHERE user_id = %s", (user_id,))
+                            new_bal = cursor.fetchone()[0]
+                            cursor.execute(
+                                "INSERT INTO coin_transactions (user_id, amount, balance_after, reference_id, description) "
+                                "VALUES (%s, %s, %s, %s, %s)",
+                                (user_id, -amount, new_bal, reference_id, description),
+                            )
+                            return {"success": True, "balance": new_bal, "deducted": amount}
+                        else:
+                            logger.warning("Insufficient balance to deduct %d credits for %s", amount, user_id)
+                            return None
         except Exception as e:
-            logger.error("Failed to deduct %d credits for %s: %s", amount, user_id, e)
-            return None
+            logger.debug("Local DB deduct_credit failed, using fallback: %s", e)
+
+        cur = self._local_wallets.get(user_id, self.free_trial_credits)
+        if cur >= amount:
+            self._local_wallets[user_id] = cur - amount
+            return {"success": True, "balance": cur - amount, "deducted": amount}
+        return None
 
     async def check_and_reserve(
         self,

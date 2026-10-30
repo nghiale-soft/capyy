@@ -106,7 +106,7 @@ async def test_normal_user_sufficient_balance():
         assert user_id == "shopper@gmail.com"
 
         res = await service.deduct_credit(user_id, 1, "img_ref", "image translation")
-        assert res == {"success": True}
+        assert res is not None and res["success"] is True
 
 
 @pytest.mark.asyncio
@@ -232,7 +232,7 @@ async def test_app_id_and_secret_key_flow():
         wallet_id = await service.check_and_reserve(req_valid, resource_type="image", required_credits=1)
         assert wallet_id == "app:cross-border"
         res = await service.deduct_credit(wallet_id, 1, "cb_ref_1", "Cross border image translate")
-        assert res == {"success": True}
+        assert res is not None and res["success"] is True
 
     # 2. Valid appId + secretKey but 0 coins -> blocked with 402 (anti-spam protection)
     with patch.object(service, "get_balance", new=AsyncMock(return_value=0)), \
@@ -288,3 +288,27 @@ def test_app_login_route():
         json={"appId": "dopa-english", "secretKey": "bad_key"},
     )
     assert bad_resp.status_code == 401
+
+
+def test_topup_route():
+    app = FastAPI()
+    app.include_router(auth_router)
+    settings = SimpleNamespace(
+        billing_enabled=True,
+        jwt_secret="route-test-secret",
+    )
+    service = BillingService(settings)
+    app.state.settings = settings
+    app.state.billing_service = service
+    client = TestClient(app)
+
+    with patch.object(service, "topup", new=AsyncMock(return_value=1500)):
+        resp = client.post(
+            "/v1/auth/topup",
+            json={"userId": "app:cross-border", "amount": 500, "referenceId": "order_123"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["success"] is True
+        assert body["newBalance"] == 1500
+        assert body["amountAdded"] == 500

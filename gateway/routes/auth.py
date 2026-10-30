@@ -144,3 +144,30 @@ async def get_me_endpoint(request: Request) -> dict[str, Any]:
             "balance": balance,
         }
     }
+
+
+class TopupWebhookRequest(BaseModel):
+    userId: str = Field(..., description="Target wallet userId ('app:<appId>' or email)")
+    amount: int = Field(..., gt=0, description="Amount of credits/coins to add")
+    referenceId: str | None = Field(default="", description="Transaction/Order reference ID")
+    description: str | None = Field(default="", description="Transaction description")
+
+
+@router.post("/topup", summary="Top up credits/coins to a wallet (called by Pricing Gateway webhook)")
+async def topup_endpoint(
+    payload: TopupWebhookRequest,
+    request: Request,
+) -> dict[str, Any]:
+    billing = get_billing_service(request)
+    new_balance = await billing.topup(
+        user_id=payload.userId,
+        amount=payload.amount,
+        reference_id=payload.referenceId or "",
+        description=payload.description or "Nạp coin qua cổng thanh toán",
+    )
+    return {
+        "success": True,
+        "userId": payload.userId,
+        "amountAdded": payload.amount,
+        "newBalance": new_balance,
+    }
