@@ -101,6 +101,7 @@ class Settings:
     # Registered internal/partner applications (appId, secretKey) pairs.
     # Each appId still uses a coin wallet ('app:<appId>') in Pricing Gateway to prevent spam/abuse.
     app_credentials: tuple[tuple[str, str], ...] = (
+        ("erp", "erp_secret_chinhthien_2026"),
         ("cross-border", "cb_secret_chinhthien_2026"),
         ("dopa-english", "dopa_secret_chinhthien_2026"),
     )
@@ -159,7 +160,7 @@ def _api_base_url() -> str:
 def _app_credentials() -> tuple[tuple[str, str], ...]:
     raw = os.getenv(
         "CAPYY_APP_CREDENTIALS",
-        "cross-border:cb_secret_chinhthien_2026,dopa-english:dopa_secret_chinhthien_2026",
+        "erp:erp_secret_chinhthien_2026,cross-border:cb_secret_chinhthien_2026,dopa-english:dopa_secret_chinhthien_2026",
     )
     pairs: list[tuple[str, str]] = []
     for item in raw.split(","):

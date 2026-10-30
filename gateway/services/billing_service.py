@@ -83,6 +83,7 @@ class BillingService:
             self.settings,
             "app_credentials",
             (
+                ("erp", "erp_secret_chinhthien_2026"),
                 ("cross-border", "cb_secret_chinhthien_2026"),
                 ("dopa-english", "dopa_secret_chinhthien_2026"),
             ),
