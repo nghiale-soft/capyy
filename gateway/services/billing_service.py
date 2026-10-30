@@ -72,11 +72,49 @@ class BillingService:
             return {str(k): str(v) for k, v in raw.items()}
         return {str(k): str(v) for k, v in raw}
 
+    def get_app_secret(self, app_id: str) -> str | None:
+        """Query secretKey for appId from MariaDB capyy.app_credentials, falling back to static config."""
+        clean_id = (app_id or "").strip()
+        if not clean_id:
+            return None
+
+        # 1. Try DB lookup first
+        host = getattr(self.settings, "database_host", None)
+        if host:
+            try:
+                import pymysql
+
+                conn = pymysql.connect(
+                    host=host,
+                    port=int(getattr(self.settings, "database_port", 3306)),
+                    database=getattr(self.settings, "database_name", "capyy"),
+                    user=getattr(self.settings, "database_user", "root"),
+                    password=getattr(self.settings, "database_password", ""),
+                    charset="utf8mb4",
+                    connect_timeout=2,
+                    read_timeout=3,
+                    autocommit=True,
+                )
+                with conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT secret_key FROM app_credentials WHERE app_id = %s AND is_active = 1",
+                            (clean_id,),
+                        )
+                        row = cursor.fetchone()
+                        if row and row[0]:
+                            return str(row[0])
+            except Exception as e:
+                logger.debug("DB lookup for app_credentials failed: %s", e)
+
+        # 2. Fallback to static app_credentials map in config
+        return self.app_credentials_map.get(clean_id)
+
     def verify_app_credentials(self, app_id: str, secret_key: str) -> str:
         """Verify appId + secretKey and return the wallet userId ('app:<appId>')."""
         clean_id = (app_id or "").strip()
         clean_secret = (secret_key or "").strip()
-        expected = self.app_credentials_map.get(clean_id)
+        expected = self.get_app_secret(clean_id)
         if not clean_id or not clean_secret or not expected:
             raise HTTPException(status_code=401, detail="Invalid appId or secretKey")
         if not hmac.compare_digest(expected.encode("utf-8"), clean_secret.encode("utf-8")):
