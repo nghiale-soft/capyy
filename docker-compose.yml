@@ -22,11 +22,11 @@ services:
       CAPYY_DB_USER: root
       CAPYY_DB_PASSWORD: ${CAPYY_DB_PASSWORD:?Add CAPYY_DB_PASSWORD to capyy/.env}
       BILLING_ENABLED: "true"
-      PRICING_GATEWAY_URL: "http://pricing-gateway:8088"
+      PRICING_GATEWAY_URL: "http://pricing-gateway:2088"
       PRICING_GATEWAY_TIMEOUT: "5.0"
       FREE_TRIAL_CREDITS: "20"
     ports:
-      - "1221:1221" # API (OpenAI/Anthropic-compatible)
+      - "2221:2221" # API (OpenAI/Anthropic-compatible)
       - "2222:2222" # Dashboard web
     volumes:
       - ./data/config:/app/config

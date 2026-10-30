@@ -32,7 +32,7 @@ class Settings:
     log_body_chars: int = 2000
     log_color: bool = True
     host: str = "0.0.0.0"
-    port: int = 1221
+    port: int = 2221
     # Dashboard UI (web) runs on its own port; no paths are served on the API port
     dashboard_enabled: bool = True
     dashboard_host: str = "0.0.0.0"
@@ -190,7 +190,7 @@ def load_settings() -> Settings:
         log_body_chars=_int("FREEBUFF_LOG_BODY_CHARS", 0 if debug else 2000),
         log_color=_bool("FREEBUFF_LOG_COLOR", color_default),
         host=os.getenv("FREEBUFF_HOST", "0.0.0.0"),
-        port=_int("FREEBUFF_PORT", 1221),
+        port=_int("FREEBUFF_PORT", 2221),
         dashboard_enabled=_bool("FREEBUFF_DASHBOARD_ENABLED", True),
         dashboard_host=os.getenv("FREEBUFF_DASHBOARD_HOST", "0.0.0.0"),
         dashboard_port=_int("FREEBUFF_DASHBOARD_PORT", 2222),

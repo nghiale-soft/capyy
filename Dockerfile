@@ -76,7 +76,7 @@ RUN useradd --create-home --uid 1000 appuser \
     && chown -R appuser:appuser /app
 USER appuser
 
-EXPOSE 1221 2222
+EXPOSE 2221 2222
 
 # `uv run` verifies the lockfile is in sync, then executes the console script
 # (main:main -> uvicorn). Env vars come from --env-file / -e at run time.

@@ -17,14 +17,14 @@ flowchart TD
         C3["Internal 1688-to-Shopee ERP<br/>(Client nội bộ cắm API)"]
     end
 
-    subgraph Cappy Core Engine (Port 1221)
+    subgraph Cappy Core Engine (Port 2221)
         GW["FastAPI Gateway (gateway/app.py)"]
         AUTH["Auth & Credit Interceptor (gateway/deps.py)"]
         IMG["Image Service (gateway/routes/images.py)"]
         VID["Video Service (gateway/routes/videos.py)"]
     end
 
-    subgraph Central Billing (Port 8088)
+    subgraph Central Billing (Port 2088)
         PG["Pricing Gateway (Spring Boot / MariaDB)"]
         WALLET["Ví Credits (wallets & transactions)"]
         PAYOS["PayOS VietQR Napas 24/7"]
@@ -67,8 +67,8 @@ Hệ thống hoạt động theo mô hình nạp trước (Prepaid Credits). Quy
 ## 3. THÔNG SỐ GIAO TIẾP VỚI PRICING GATEWAY
 
 Pricing Gateway chạy tại mạng Docker (`common-service`) hoặc Localhost:
-* **Host nội bộ Docker**: `http://pricing-gateway:8088`
-* **Host máy tính (Local)**: `http://localhost:8088`
+* **Host nội bộ Docker**: `http://pricing-gateway:2088`
+* **Host máy tính (Local)**: `http://localhost:2088`
 
 ### 3.1. Kiểm tra số dư (Pre-check Balance)
 * **Endpoint**: `GET /api/v1/credits/{userId}/balance`
@@ -119,7 +119,7 @@ Pricing Gateway chạy tại mạng Docker (`common-service`) hoặc Localhost:
 Thêm các biến cấu hình:
 ```bash
 # Pricing Gateway Integration
-PRICING_GATEWAY_URL="http://pricing-gateway:8088"
+PRICING_GATEWAY_URL="http://pricing-gateway:2088"
 PRICING_GATEWAY_TIMEOUT=5.0
 BILLING_ENABLED=true
 FREE_TRIAL_CREDITS=20
@@ -276,7 +276,7 @@ Hệ thống sử dụng **1 luồng tính Coin duy nhất** cho mọi tài kho�
 
 ## 6. KẾ HOẠCH TRIỂN KHAI VÀ KIỂM THỬ (VERIFICATION CHECKLIST)
 
-- [x] **Bước 1**: Đảm bảo container `pricing-gateway` (port 8088) chạy ổn định trong `common-docker.yml`.
+- [x] **Bước 1**: Đảm bảo container `pricing-gateway` (port 2088) chạy ổn định trong `common-docker.yml`.
 - [x] **Bước 2**: Tích hợp `BillingService` và `auth` routes (`/v1/auth/google`, `/v1/auth/me`) vào repo `capyy`.
 - [x] **Bước 3**: Gọi thử test endpoint ảnh bằng `curl` kèm JWT `accessToken` hoặc `X-User-Id`:
   * Lần 1-20: Trừ điểm bình thường.

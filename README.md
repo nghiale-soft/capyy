@@ -12,7 +12,7 @@ Mọi ứng dụng (App dịch thuật, Chatbot, Backend microservice, CLI tool.
 
 | Thông số | Dành cho App trên máy Host (Mac) | Dành cho Container trong Docker |
 | :--- | :--- | :--- |
-| **Base URL** | `http://localhost:1221/v1` | `http://capyy:1221/v1` |
+| **Base URL** | `http://localhost:2221/v1` | `http://capyy:2221/v1` |
 | **API Key** | `local-key` (hoặc chuỗi bất kỳ) | `local-key` (hoặc chuỗi bất kỳ) |
 | **Model** | `gemini-3.5-flash-lite` (hoặc để trống) | `gemini-3.5-flash-lite` (hoặc để trống) |
 | **Dashboard** | `http://localhost:2222` | `http://capyy:2222` |
@@ -30,7 +30,7 @@ Dành cho các ứng dụng dịch thuật, web chat, SDK OpenAI.
 
 - **Non-streaming (JSON):**
 ```bash
-curl -X POST http://localhost:1221/v1/chat/completions \
+curl -X POST http://localhost:2221/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer local-key" \
   -d '{
@@ -43,7 +43,7 @@ curl -X POST http://localhost:1221/v1/chat/completions \
 
 - **Streaming SSE (`"stream": true`):**
 ```bash
-curl -N -X POST http://localhost:1221/v1/chat/completions \
+curl -N -X POST http://localhost:2221/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer local-key" \
   -d '{
@@ -58,12 +58,12 @@ curl -N -X POST http://localhost:1221/v1/chat/completions \
 ### 2.2. `GET /v1/models` (Danh sách Model)
 - **Lấy danh sách model đã cấu hình (siêu nhanh):**
   ```bash
-  curl http://localhost:1221/v1/models
+  curl http://localhost:2221/v1/models
   ```
 - **Live Fetch trực tiếp từ Provider (`?refresh=true`):**
   Gọi thời gian thực sang nhà cung cấp để quét toàn bộ model mới nhất:
   ```bash
-  curl "http://localhost:1221/v1/models?refresh=true"
+  curl "http://localhost:2221/v1/models?refresh=true"
   ```
 
 ### 2.3. `POST /v1/images/translate` (Dịch và Thay thế Chữ trên Ảnh Sản Phẩm)
@@ -73,7 +73,7 @@ Tự động OCR nhận diện tọa độ chữ, dịch sang Tiếng Việt (ho
 
 #### A. Gửi file ảnh (Multipart Form-Data - Nhận về trực tiếp file ảnh JPEG):
 ```bash
-curl -X POST http://localhost:1221/v1/images/translate \
+curl -X POST http://localhost:2221/v1/images/translate \
   -H "Authorization: Bearer local-key" \
   -F "file=@san-pham-1688.jpg" \
   -F "target_language=Vietnamese" \
@@ -82,7 +82,7 @@ curl -X POST http://localhost:1221/v1/images/translate \
 
 #### B. Gửi JSON với Base64 / URL ảnh (Nhận JSON chứa Base64 + Bounding Boxes):
 ```bash
-curl -X POST http://localhost:1221/v1/images/translate \
+curl -X POST http://localhost:2221/v1/images/translate \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer local-key" \
   -d '{
@@ -134,7 +134,7 @@ Khi trả về file JPEG trực tiếp, `id`/`version` nằm trong các header
 Mỗi ảnh dịch được lưu thành một session có TTL (mặc định 7 ngày). Khi phát hiện lỗi, gửi `region_id` (hoặc `bbox_2d`) và mô tả lỗi; gateway chỉ gọi lại model cho vùng đó và render lại từ ảnh gốc, không chồng chữ lên bản cũ.
 
 ```bash
-curl -X POST http://localhost:1221/v1/images/img_0123456789abcdef0123456789abcdef/repair \
+curl -X POST http://localhost:2221/v1/images/img_0123456789abcdef0123456789abcdef/repair \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer local-key" \
   -d '{
@@ -169,7 +169,7 @@ Tự động nhận diện subtitle/chữ tiếng Trung trong video, inpainting 
 
 #### Gửi file video (Multipart Form-Data - Nhận về trực tiếp video MP4):
 ```bash
-curl -X POST http://localhost:1221/v1/videos/translate \
+curl -X POST http://localhost:2221/v1/videos/translate \
   -H "Authorization: Bearer local-key" \
   -H "X-User-Id: user_12345" \
   -F "file=@video_douyin_1688.mp4" \
@@ -183,7 +183,7 @@ curl -X POST http://localhost:1221/v1/videos/translate \
 
 ### 2.5. Hệ Thống Quản Lý Tín Dụng & Thanh Toán (Credit & Pricing Gateway Integration)
 
-Cappy tích hợp trực tiếp với microservice [Pricing Gateway](file:///Users/nghiale98/Documents/1.My%20Companies/ChinhThien/Source%20Code/Pricing%20Gateway) (cổng 8088) để quản lý số dư tín dụng cho Web App và Extension:
+Cappy tích hợp trực tiếp với microservice [Pricing Gateway](file:///Users/nghiale98/Documents/1.My%20Companies/ChinhThien/Source%20Code/Pricing%20Gateway) (cổng 2088) để quản lý số dư tín dụng cho Web App và Extension:
 
 #### Quy tắc tiêu thụ Tín dụng (Credit Rules):
 * 📸 **Dịch 1 ảnh hoàn chỉnh:** Tiêu thụ **1 Credit** (~200đ - 250đ).
@@ -203,7 +203,7 @@ Cappy tích hợp trực tiếp với microservice [Pricing Gateway](file:///Use
 
 ### 2.6. `GET /healthz` (Health Check)
 ```bash
-curl http://localhost:1221/healthz
+curl http://localhost:2221/healthz
 # Trả về: {"status": "ok"}
 ```
 
@@ -213,7 +213,7 @@ curl http://localhost:1221/healthz
 
 ### 3.1. Ứng dụng Dịch thuật (Bob, Immersive Translate, PopClip)
 - **Loại dịch vụ / Dịch vụ tùy chỉnh:** Chọn `OpenAI` hoặc `OpenAI-compatible`.
-- **API URL / Host:** `http://localhost:1221/v1` (hoặc `http://localhost:1221/v1/chat/completions` tùy app).
+- **API URL / Host:** `http://localhost:2221/v1` (hoặc `http://localhost:2221/v1/chat/completions` tùy app).
 - **API Key:** `local-key`.
 - **Model:** `gemini-3.5-flash-lite`.
 
@@ -225,7 +225,7 @@ Ví dụ gọi từ service `iot-apartment` hoặc `common-zalo-api`:
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://capyy:1221/v1",
+    base_url="http://capyy:2221/v1",
     api_key="local-key",
 )
 
@@ -241,7 +241,7 @@ print(response.choices[0].message.content)
 import OpenAI from "openai";
 
 const client = new OpenAI({
-  baseURL: "http://capyy:1221/v1",
+  baseURL: "http://capyy:2221/v1",
   apiKey: "local-key",
 });
 
@@ -255,12 +255,12 @@ console.log(completion.choices[0].message.content);
 ### 3.3. Coding Agents (Claude Code, Codex, Cline, Aider)
 - **Claude Code CLI:**
   ```bash
-  export ANTHROPIC_BASE_URL="http://localhost:1221"
+  export ANTHROPIC_BASE_URL="http://localhost:2221"
   claude
   ```
 - **OpenAI-compatible tools:**
   ```bash
-  export OPENAI_BASE_URL="http://localhost:1221/v1"
+  export OPENAI_BASE_URL="http://localhost:2221/v1"
   export OPENAI_API_KEY="local-key"
   ```
 
@@ -273,7 +273,7 @@ import httpx
 # 1. Gửi file ảnh trực tiếp và nhận lại ảnh đã dịch
 with open("san_pham_1688.jpg", "rb") as f:
     resp = httpx.post(
-        "http://capyy:1221/v1/images/translate",
+        "http://capyy:2221/v1/images/translate",
         headers={"Authorization": "Bearer local-key"},
         files={"file": ("san_pham.jpg", f, "image/jpeg")},
         data={"target_language": "Vietnamese", "response_format": "image"},
@@ -298,7 +298,7 @@ async function translateProductImage(imagePath: string, outputPath: string) {
   form.append("target_language", "Vietnamese");
   form.append("response_format", "image");
 
-  const response = await axios.post("http://capyy:1221/v1/images/translate", form, {
+  const response = await axios.post("http://capyy:2221/v1/images/translate", form, {
     headers: {
       ...form.getHeaders(),
       Authorization: "Bearer local-key",
