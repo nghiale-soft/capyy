@@ -148,6 +148,130 @@ class ImageRouteTests(unittest.TestCase):
         response = self.client.get("/v1/images/img_00000000000000000000000000000000")
         self.assertEqual(response.status_code, 404)
 
+    def test_image_test_endpoint_pass(self) -> None:
+        # 1: OCR translation, 2: QC inspection pass
+        self.gateway.responses = [
+            json.dumps({"regions": [_region("TRỨNG")]}),
+            json.dumps({
+                "approved": True,
+                "qc_score": 95,
+                "feedback": "Translation quality is great",
+                "issues": [],
+            }),
+        ]
+        source = base64.b64encode(_source_image()).decode("utf-8")
+        response = self.client.post(
+            "/v1/images/test",
+            json={
+                "image_base64": source,
+                "target_language": "Vietnamese",
+                "response_format": "json",
+                "pass_threshold": 80,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()
+        self.assertEqual(data["status"], "passed")
+        self.assertTrue(data["approved"])
+        self.assertGreaterEqual(data["data"]["qc_score"], 80)
+        self.assertIn("image_base64", data["data"])
+
+    def test_image_test_endpoint_fail_and_auto_repair(self) -> None:
+        # 1: OCR translation, 2: QC inspection fail, 3: Auto-repair LLM call, 4: Auto-repair QC
+        self.gateway.responses = [
+            json.dumps({"regions": [_region("TRỨNG")]}),
+            json.dumps({
+                "approved": False,
+                "qc_score": 50,
+                "feedback": "Chữ tiếng Trung ở góc chưa được xóa sạch",
+                "issues": [
+                    {
+                        "issue_type": "residual_text",
+                        "severity": "high",
+                        "description": "Còn sót chữ tiếng Trung ở góc trên",
+                    }
+                ],
+            }),
+            json.dumps({"regions": [_region("TRỨNG ĐÃ FIX", region_id=0)]}),
+            json.dumps({
+                "approved": True,
+                "qc_score": 95,
+                "feedback": "Fixed cleanly",
+                "issues": [],
+            }),
+        ]
+        source = base64.b64encode(_source_image()).decode("utf-8")
+        response = self.client.post(
+            "/v1/images/test",
+            json={
+                "image_base64": source,
+                "target_language": "Vietnamese",
+                "response_format": "image",
+                "pass_threshold": 80,
+                "auto_repair": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers["x-capyy-status"], "fail")
+        self.assertEqual(response.headers["x-capyy-qc-approved"], "false")
+        data = response.json()
+        self.assertEqual(data["status"], "failed")
+        self.assertFalse(data["approved"])
+        self.assertEqual(data["qc_score"], 50)
+        self.assertEqual(len(data["issues"]), 1)
+        self.assertTrue(data["auto_repair"]["triggered"])
+        self.assertIn("Còn sót chữ tiếng Trung", data["auto_repair"]["instruction"])
+
+    def test_image_feedback_fail_triggers_repair(self) -> None:
+        # First create an image session
+        self.gateway.responses = [
+            json.dumps({"regions": [_region("TRỨNG")]}),
+            # Feedback repair responses:
+            json.dumps({"regions": [_region("TRỨNG GÀ SIÊU SẠCH", region_id=0)]}),
+            json.dumps({
+                "approved": True,
+                "qc_score": 98,
+                "feedback": "Repaired successfully",
+                "issues": [],
+            }),
+        ]
+        source = base64.b64encode(_source_image()).decode("utf-8")
+        trans_res = self.client.post(
+            "/v1/images/translate",
+            json={"image_base64": source, "response_format": "json"},
+        )
+        self.assertEqual(trans_res.status_code, 200)
+        image_id = trans_res.json()["data"]["id"]
+
+        # Call feedback endpoint reporting fail with reason
+        feedback_res = self.client.post(
+            f"/v1/images/{image_id}/feedback",
+            json={
+                "status": "failed",
+                "reason": "chữ dịch chưa chuẩn, sửa thành TRỨNG GÀ SIÊU SẠCH",
+                "response_format": "json",
+            },
+        )
+        self.assertEqual(feedback_res.status_code, 200, feedback_res.text)
+        fb_data = feedback_res.json()
+        self.assertEqual(fb_data["status"], "repaired")
+        self.assertEqual(fb_data["data"]["version"], 2)
+        self.assertEqual(
+            fb_data["data"]["regions"][0]["translated_text"], "TRỨNG GÀ SIÊU SẠCH"
+        )
+
+        # Test feedback pass recording
+        pass_res = self.client.post(
+            "/v1/images/feedback",
+            json={
+                "image_id": image_id,
+                "status": "passed",
+            },
+        )
+        self.assertEqual(pass_res.status_code, 200)
+        self.assertEqual(pass_res.json()["status"], "recorded")
+        self.assertTrue(pass_res.json()["approved"])
+
 
 if __name__ == "__main__":
     unittest.main()

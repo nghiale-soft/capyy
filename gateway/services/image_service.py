@@ -459,11 +459,15 @@ class ImageTranslationService:
         )
         if not approved and llm_report.get("feedback"):
             feedback = f"{feedback} | {llm_report.get('feedback')}"
+        merged_issues = list(deterministic_report.get("issues") or []) + list(
+            llm_report.get("issues") or []
+        )
         return {
             **deterministic_report,
             "approved": approved,
             "qc_score": min(det_score, llm_score),
             "feedback": feedback,
+            "issues": merged_issues,
             "llm": llm_report,
         }
 
